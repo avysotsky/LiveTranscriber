@@ -1,0 +1,30 @@
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "LiveTranscriber.Core", "src\LiveTranscriber.Core\LiveTranscriber.Core.csproj", "{7AD56C1E-A4F2-47D1-9D8C-5DC6AA1B4A11}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "LiveTranscriber.Desktop", "src\LiveTranscriber.Desktop\LiveTranscriber.Desktop.csproj", "{A7A5BAAF-297B-4FE3-AB0A-54743BE62BB0}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "LiveTranscriber.Core.Tests", "tests\LiveTranscriber.Core.Tests\LiveTranscriber.Core.Tests.csproj", "{038DCA8B-A91C-49A4-9372-1BBEAB8713CD}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{7AD56C1E-A4F2-47D1-9D8C-5DC6AA1B4A11}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{7AD56C1E-A4F2-47D1-9D8C-5DC6AA1B4A11}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{7AD56C1E-A4F2-47D1-9D8C-5DC6AA1B4A11}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{7AD56C1E-A4F2-47D1-9D8C-5DC6AA1B4A11}.Release|Any CPU.Build.0 = Release|Any CPU
+		{A7A5BAAF-297B-4FE3-AB0A-54743BE62BB0}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{A7A5BAAF-297B-4FE3-AB0A-54743BE62BB0}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{A7A5BAAF-297B-4FE3-AB0A-54743BE62BB0}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{A7A5BAAF-297B-4FE3-AB0A-54743BE62BB0}.Release|Any CPU.Build.0 = Release|Any CPU
+		{038DCA8B-A91C-49A4-9372-1BBEAB8713CD}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{038DCA8B-A91C-49A4-9372-1BBEAB8713CD}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{038DCA8B-A91C-49A4-9372-1BBEAB8713CD}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{038DCA8B-A91C-49A4-9372-1BBEAB8713CD}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+EndGlobal
