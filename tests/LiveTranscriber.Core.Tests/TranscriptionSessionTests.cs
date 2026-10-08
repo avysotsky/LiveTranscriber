@@ -45,12 +45,26 @@ public sealed class TranscriptionSessionTests
         await session.StopAsync();
     }
 
+    [Fact]
+    public async Task ForwardsCaptureAndEngineErrors()
+    {
+        var source = new FakeSource();
+        var engine = new FakeEngine();
+        await using var session = new TranscriptionSession(source, engine);
+        var messages = new List<string>();
+        session.Failed += error => messages.Add(error.Message);
+        source.Fail(new InvalidOperationException("capture unavailable"));
+        engine.Fail(new InvalidOperationException("recognizer unavailable"));
+        Assert.Equal(new[] { "capture unavailable", "recognizer unavailable" }, messages);
+    }
+
     private sealed class FakeSource : IAudioSource
     {
         public bool IsStarted { get; private set; }
         public event Action<float[]>? SamplesCaptured;
         public event Action<Exception>? Failed;
         public void Emit(float[] samples) => SamplesCaptured?.Invoke(samples);
+        public void Fail(Exception error) => Failed?.Invoke(error);
         public void Start() => IsStarted = true;
         public void Stop() => IsStarted = false;
         public void Dispose() => Stop();
@@ -61,6 +75,7 @@ public sealed class TranscriptionSessionTests
         public bool IsStarted { get; private set; }
         public event Action<TranscriptUpdate>? TextAvailable;
         public event Action<Exception>? Failed;
+        public void Fail(Exception error) => Failed?.Invoke(error);
         public Task StartAsync(CancellationToken cancellationToken = default)
         {
             IsStarted = true;
