@@ -1,0 +1,22 @@
+name: Windows CI
+on:
+  push:
+    branches: [main, 'feature/**']
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  build-test:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.0.x'
+      - name: Restore
+        run: dotnet restore LiveTranscriber.sln
+      - name: Test core
+        run: dotnet test tests/LiveTranscriber.Core.Tests/LiveTranscriber.Core.Tests.csproj -c Release --no-restore --verbosity normal
+      - name: Build desktop
+        run: dotnet build src/LiveTranscriber.Desktop/LiveTranscriber.Desktop.csproj -c Release --no-restore --no-incremental
