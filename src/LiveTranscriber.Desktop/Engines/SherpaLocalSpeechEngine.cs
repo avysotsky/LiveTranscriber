@@ -1,3 +1,4 @@
+using System.IO;
 using LiveTranscriber.Core;
 using SherpaOnnx;
 
