@@ -154,8 +154,31 @@ public sealed class TranslationPipeline : IAsyncDisposable
                 try
                 {
                     Interlocked.Increment(ref _requestsStarted);
-                    string result = await _translator.TranslateToRussianAsync(
-                        string.Join("\n", phrases), _shutdown.Token).ConfigureAwait(false);
+                    string input = string.Join("\n", phrases);
+                    string result;
+                    if (_translator is IStreamingTextTranslator streaming)
+                    {
+                        result = await streaming.TranslateToRussianStreamingAsync(
+                            input,
+                            cumulative =>
+                            {
+                                // Partial output is transient even for finalized
+                                // English input. Never append it as a final line.
+                                // A newer preview, final event, or Clear invalidates
+                                // stale in-flight streamed tokens.
+                                if (first.Generation == Generation &&
+                                    first.PreviewRevision == Interlocked.Read(ref _previewRevision) &&
+                                    Volatile.Read(ref _accepting) != 0 &&
+                                    !string.IsNullOrWhiteSpace(cumulative))
+                                    PreviewTranslated?.Invoke(cumulative, first.Generation);
+                            },
+                            _shutdown.Token).ConfigureAwait(false);
+                    }
+                    else
+                    {
+                        result = await _translator.TranslateToRussianAsync(
+                            input, _shutdown.Token).ConfigureAwait(false);
+                    }
                     Interlocked.Increment(ref _requestsSucceeded);
 
                     if (first.Generation == Generation && !string.IsNullOrWhiteSpace(result))
@@ -171,6 +194,12 @@ public sealed class TranslationPipeline : IAsyncDisposable
                 catch (OperationCanceledException) when (_shutdown.IsCancellationRequested) { break; }
                 catch (Exception ex)
                 {
+                    // Hide incomplete partial GPT text on failure; do not
+                    // misrepresent it as a successful translated sentence.
+                    if (_translator is IStreamingTextTranslator &&
+                        first.Generation == Generation &&
+                        first.PreviewRevision == Interlocked.Read(ref _previewRevision))
+                        PreviewTranslated?.Invoke(string.Empty, first.Generation);
                     Interlocked.Increment(ref _requestsFailed);
                     if (first.Generation == Generation)
                         Error?.Invoke(ex is HttpRequestException or TaskCanceledException

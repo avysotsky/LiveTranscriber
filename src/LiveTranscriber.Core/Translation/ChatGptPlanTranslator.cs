@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
@@ -8,7 +9,7 @@ namespace LiveTranscriber.Core.Translation;
 /// ChatGPT Plus/Pro plan translation via authorized OAuth and streamed Responses.
 /// Calls only documented public API, never ChatGPT backend endpoints or cookies.
 /// </summary>
-public sealed class ChatGptPlanTranslator : ITextTranslator
+public sealed class ChatGptPlanTranslator : IStreamingTextTranslator
 {
     private readonly ChatGptPlanConnection _connection;
     private readonly string _model;
@@ -21,8 +22,12 @@ public sealed class ChatGptPlanTranslator : ITextTranslator
             : model;
     }
 
-    public async Task<string> TranslateToRussianAsync(
-        string englishText, CancellationToken cancellationToken)
+    public Task<string> TranslateToRussianAsync(
+        string englishText, CancellationToken cancellationToken) =>
+        TranslateToRussianStreamingAsync(englishText, _ => { }, cancellationToken);
+
+    public async Task<string> TranslateToRussianStreamingAsync(
+        string englishText, Action<string> onPartial, CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(englishText)) return string.Empty;
         string token = await _connection.GetAccessTokenAsync(cancellationToken).ConfigureAwait(false);
@@ -61,7 +66,8 @@ public sealed class ChatGptPlanTranslator : ITextTranslator
         await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken)
             .ConfigureAwait(false);
         using var reader = new StreamReader(stream, Encoding.UTF8);
-        return await ReadCompletedTranslationAsync(reader, cancellationToken).ConfigureAwait(false);
+        return await ReadCompletedTranslationAsync(reader, cancellationToken, onPartial)
+            .ConfigureAwait(false);
     }
 
     /// <summary>
@@ -69,10 +75,13 @@ public sealed class ChatGptPlanTranslator : ITextTranslator
     /// streams must not be surfaced as successful partial translations.
     /// </summary>
     public static async Task<string> ReadCompletedTranslationAsync(
-        TextReader reader, CancellationToken cancellationToken)
+        TextReader reader, CancellationToken cancellationToken,
+        Action<string>? onPartial = null)
     {
         var output = new StringBuilder();
         bool completed = false;
+        long lastPublished = 0;
+        int lastPublishedLength = 0;
         while (true)
         {
             string? line = await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false);
@@ -89,7 +98,21 @@ public sealed class ChatGptPlanTranslator : ITextTranslator
                 if (type == "response.output_text.delta" &&
                     item.TryGetProperty("delta", out var delta) &&
                     delta.ValueKind == JsonValueKind.String)
+                {
                     output.Append(delta.GetString());
+                    // First visible text is shown immediately. Subsequent
+                    // cumulative updates are throttled to reduce WPF dispatch.
+                    long now = Stopwatch.GetTimestamp();
+                    if (onPartial is not null && output.Length > 0 &&
+                        (lastPublished == 0 ||
+                         Stopwatch.GetElapsedTime(lastPublished) >= TimeSpan.FromMilliseconds(120) ||
+                         output.Length - lastPublishedLength >= 32))
+                    {
+                        onPartial(output.ToString());
+                        lastPublished = now;
+                        lastPublishedLength = output.Length;
+                    }
+                }
                 else if (type == "response.completed")
                     completed = true;
                 else if (type == "response.failed" || type == "response.incomplete" ||

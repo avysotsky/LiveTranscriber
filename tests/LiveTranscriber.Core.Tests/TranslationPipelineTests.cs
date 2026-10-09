@@ -83,6 +83,62 @@ public sealed class TranslationPipelineTests
     }
 
     [Fact]
+    public async Task StreamedFinalIsShownProvisionallyBeforeFinalIsCommitted()
+    {
+        var backend = new ControlledStreamingTranslator();
+        await using var sut = new TranslationPipeline(backend, TimeSpan.Zero);
+        var interim = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var final = new ConcurrentQueue<string>();
+        sut.PreviewTranslated += (text, _) => interim.TrySetResult(text);
+        sut.Translated += (text, _) => final.Enqueue(text);
+        Assert.True(sut.TryEnqueueFinal("Could you explain ASP.NET?"));
+        await backend.FirstEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        backend.PublishPartial("Можете объяснить");
+        Assert.Equal("Можете объяснить", await interim.Task.WaitAsync(TimeSpan.FromSeconds(5)));
+        Assert.Empty(final); // The translation is not final before response.completed.
+        backend.Complete.TrySetResult("Можете объяснить ASP.NET?");
+        await sut.CompleteAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(new[] { "Можете объяснить ASP.NET?" }, final.ToArray());
+    }
+
+    [Fact]
+    public async Task FailedStreamClearsProvisionalTextAndDoesNotAppendFinal()
+    {
+        var backend = new ControlledStreamingTranslator();
+        await using var sut = new TranslationPipeline(backend, TimeSpan.Zero);
+        var visible = new ConcurrentQueue<string>();
+        var failures = new ConcurrentQueue<string>();
+        sut.PreviewTranslated += (text, _) => visible.Enqueue(text);
+        sut.Error += text => failures.Enqueue(text);
+        Assert.True(sut.TryEnqueueFinal("Final English sentence"));
+        await backend.FirstEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        backend.PublishPartial("Незаконченный перевод");
+        backend.Fail.TrySetResult();
+        await sut.CompleteAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal("Незаконченный перевод", visible.First());
+        Assert.Equal(string.Empty, visible.Last());
+        Assert.NotEmpty(failures);
+        Assert.Equal(0, sut.GetMetrics().ApiRequestsSucceeded);
+        Assert.Equal(1, sut.GetMetrics().ApiRequestsFailed);
+    }
+
+    [Fact]
+    public async Task ClearingSessionHidesInFlightStreamedResult()
+    {
+        var backend = new ControlledStreamingTranslator();
+        await using var sut = new TranslationPipeline(backend, TimeSpan.Zero);
+        var visible = new ConcurrentQueue<string>();
+        sut.PreviewTranslated += (text, _) => visible.Enqueue(text);
+        Assert.True(sut.TryEnqueueFinal("old source"));
+        await backend.FirstEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        sut.ClearPending();
+        backend.PublishPartial("old Russian");
+        backend.Complete.TrySetResult("old Russian");
+        await sut.CompleteAsync(TimeSpan.FromSeconds(5));
+        Assert.Empty(visible);
+    }
+
+    [Fact]
     public async Task NonFinalTextIsNotQueuedByEmptyInput()
     {
         var backend = new EchoTranslator();
@@ -125,6 +181,34 @@ public sealed class TranslationPipelineTests
         Assert.Contains("full", error);
         backend.ReleaseFirst.TrySetResult();
         await sut.CompleteAsync(TimeSpan.FromSeconds(5));
+    }
+
+    private sealed class ControlledStreamingTranslator : IStreamingTextTranslator
+    {
+        private Action<string>? _sink;
+        public TaskCompletionSource FirstEntered { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource<string> Complete { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Fail { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public void PublishPartial(string text) => _sink?.Invoke(text);
+
+        public async Task<string> TranslateToRussianStreamingAsync(
+            string english, Action<string> onPartial, CancellationToken token)
+        {
+            _sink = onPartial;
+            FirstEntered.TrySetResult();
+            var done = await Task.WhenAny(Complete.Task, Fail.Task).WaitAsync(token);
+            if (done == Fail.Task) throw new InvalidOperationException("Mock stream interrupted");
+            return await Complete.Task.WaitAsync(token);
+        }
+
+        public Task<string> TranslateToRussianAsync(string text, CancellationToken token) =>
+            TranslateToRussianStreamingAsync(text, _ => { }, token);
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 
     private sealed class EchoTranslator : ITextTranslator
