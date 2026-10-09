@@ -45,6 +45,7 @@ def main():
 
     emit({"type": "ready"})
     for line in sys.stdin:
+        request = None
         try:
             request = json.loads(line)
             request_id = request.get("id")
