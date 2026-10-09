@@ -6,8 +6,8 @@ Windows **speaker-output-only** English live transcription with optional **autom
 - **Cloud:** Azure Speech continuous recognition. Audio leaves the machine **only** after selecting Cloud and pressing Start.
 - **Capture:** Windows WASAPI render-device loopback **or** selected application process-tree loopback; the app never opens a microphone.
 - **Audio:** downmix and stream resampling to mono 16 kHz, bounded queue (12 chunks), interim/final text.
-- **Translation:** optional **offline OPUS-MT EN → RU (INT8, CTranslate2)** as the **default translation provider**, plus opt-in Groq. Local model initializes lazily, is reused across sessions, and defers expensive interim work to protect English ASR.
-- **Privacy:** no recording or transcript persistence. With Local recognition + Local translation, English audio and text never leave the computer. **Only if you explicitly select Groq cloud translation AND check Auto-translate** are interim/final English transcripts sent to Groq; audio is never sent to Groq. Selecting Azure recognition separately transmits audio.
+- **Translation:** default offline OPUS-MT INT8, or opt-in Groq, or **ChatGPT subscription via official Sign in with ChatGPT**. Both cloud modes transfer English text only after explicit selection, authorization and translation enablement. Local model is cached to protect ASR performance.
+- **Privacy:** no recording or transcript persistence. With Local recognition + Local translation, audio and text stay on the computer. Opt-in Groq or ChatGPT plan translation sends only English text to its selected provider. Selecting Azure speech recognition separately sends audio. ChatGPT session tokens stay in process memory only.
 
 **Capture scopes:** "All speaker output" captures the entire default output device; "Selected application" captures a selected PID and child processes. This does not capture the microphone directly, but microphone monitoring/echo replayed through the selected audio stream may still appear. No silent fallback from app capture to device capture is allowed. Device selection and automatic provider fallback remain future increments.
 
@@ -49,7 +49,7 @@ Azure may incur usage charges. Do not commit or log keys. Cloud transmits audio 
 
 ## Automatic English → Russian translation
 
-Two independent selectors are available: **Engine** (English speech recognition: Local/Azure), and **Translator** (Russian text translation: **Local OPUS-MT (offline)** / Groq cloud).
+Two independent selectors are available: **Engine** (English speech recognition: Local/Azure), and **Translator** (Russian text translation: **Local OPUS-MT (offline)** / Groq cloud / ChatGPT plan Sign in).
 
 ### Offline translator — one-time install on Windows
 
@@ -80,6 +80,16 @@ Choose **Groq (cloud)** and enable translation explicitly before Start. `GROQ_AP
 Interim English hypotheses are sent for translation at a bounded cadence (~4 seconds). Temporary Russian text is superseded as the utterance changes; finalized translations are appended in order. **Copy** copies both languages; **Clear** discards pending outdated translations; Stop attempts to complete pending final translations. The status row shows request success/errors for the selected provider.
 
 See [LT-05 offline translation setup and limitations](docs/LT05_LOCAL_RUSSIAN_TRANSLATION.md). OPUS-MT may mistranslate specialized .NET terminology or partial sentences; test representative real speech.
+
+### ChatGPT subscription via Sign in with ChatGPT (optional)
+
+The open-source desktop app can use the [official Sign in with ChatGPT plan usage flow](https://developers.openai.com/siwc/token-sharing-open-source). This is **separate from an ordinary, separately billed OpenAI API key** and may be limited by ChatGPT plan eligibility and quota.
+
+Choose **ChatGPT plan (Sign in)** in Translator, press **Continue with ChatGPT**, review and approve the requested access in your system browser, then select a model returned by your account. Enable **Auto-translate EN → RU** and press **Test translator** (fixed test sentence). Only after that, press Start for continuous English-to-Russian translation. No ChatGPT cookies or passwords are entered into LiveTranscriber.
+
+OpenAI requests use the public **Responses API**, `store=false`, `stream=true`, and include only English transcript text. Credentials are not saved to disk and sign-in must be repeated after application restart; the nonsecret host registration ID alone persists locally. Stop before clicking **Disconnect** to invalidate this app's in-memory token. ChatGPT usage is not unlimited, and it is not guaranteed that your account has a particular listed model. No automatic cloud fallback is performed.
+
+See [LT-07: official ChatGPT plan integration and security](docs/LT07_CHATGPT_PLAN_TRANSLATION.md).
 
 ## Build, test, run
 
