@@ -193,6 +193,7 @@ public partial class MainWindow : Window
             $"Queue {metrics.QueuedAudioSeconds:0.00}s ({metrics.QueuedChunks}/{metrics.QueueCapacityChunks})  |  " +
             $"Near-full events {metrics.NearCapacityEvents}  |  " +
             $"Lost {metrics.DroppedAudioSeconds:0.00}s  |  " +
+            $"Queue wait avg/peak {metrics.AverageQueueWaitMilliseconds:0.0}/{metrics.PeakQueueWaitMilliseconds:0.0}ms  |  " +
             $"{ratioName} {metrics.ProcessingRatio:0.00}";
         HealthText.Text = health switch
         {
@@ -221,10 +222,13 @@ public partial class MainWindow : Window
             $"Remaining queued audio: {metrics.QueuedAudioSeconds:0.00}s",
             $"Dropped audio: {metrics.DroppedAudioSeconds:0.00}s ({metrics.DroppedChunks} chunks)",
             $"Processed audio: {metrics.ProcessedAudioSeconds:0.00}s ({metrics.ProcessedChunks} chunks)",
+            $"Average capture callback-to-ASR-start wait: {metrics.AverageQueueWaitMilliseconds:0.00} ms",
+            $"Peak capture callback-to-ASR-start wait: {metrics.PeakQueueWaitMilliseconds:0.00} ms",
+            $"Longest individual recognizer call: {metrics.PeakRecognizerCallMilliseconds:0.00} ms",
             $"Client processing/audio ratio: {metrics.ProcessingRatio:0.00}" +
                 (EngineSelect.SelectedIndex == 1 ? " (cloud upload, not speech latency)" : " (local ASR)"),
             $"Health: {_healthMonitor.State}",
-            "CPU/latency figures are observations, not guarantees. End-to-end transcript delay is not measured."
+            "Queue wait starts at the capture callback, not at speech onset. End-to-end transcript delay is NOT measured."
         });
     }
 

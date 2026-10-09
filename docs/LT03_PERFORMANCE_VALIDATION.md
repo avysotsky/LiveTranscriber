@@ -13,6 +13,7 @@ The desktop app samples every 2 seconds:
 - Current and peak **queued** audio duration, based on PCM mono at 16,000 samples/sec, and occupancy in **chunks** out of the fixed 12-slot queue.
 - Count and duration of **dropped** chunks, when the bounded queue is full.
 - Client processing ratio (ASR processing time / processed-audio duration). This is LOCAL model compute RTF for offline recognition, but **NOT** cloud service latency in Cloud mode.
+- **Mean and maximum queue wait** from each source callback into the start of its ASR processing call, plus the longest individual client-side recognizer call. These are sampled using monotonic Stopwatch ticks; they are NOT speech onset-to-rendered-transcript latency.
 
 The health indicator reports `WarmingUp`, `Healthy` or `UnderPressure`. `UnderPressure` is immediate on fresh dropped audio, otherwise based on three consecutive 2-second samples above at least one threshold:
 
@@ -61,3 +62,26 @@ Source: Local INT8, **Selected application**, duration **00:17:39**. The user re
 The lost fraction is approximately 0.014% of processed audio. **15 lost chunks are not zero loss**; a brief missed syllable is possible. All reported lost chunks have an average duration of ~10ms. With 12 queue slots, a 0.6-second queue threshold was ineffective for the observed 10ms packet size; LT-03b corrects this by counting buffer slots and threshold crossings. The observed 11.2% process CPU, 386 MiB RAM and 0.12 local processing ratio support resource feasibility for this shorter run, but do not guarantee 30-minute behavior. Speech-to-text latency was not measured. The user has not yet supplied a separate-app isolation result, so do not declare isolation verified by this run alone.
 
 The next full acceptance run remains 30 minutes with representative competing workloads.
+
+## 2026-10-09 user-reported follow-up (LT-03b)
+
+Source: Local INT8, **Selected application**, session length **00:11:10**, after queue occupancy instrumentation.
+
+| Metric | Value |
+| --- | ---: |
+| Peak process CPU | 9.7% |
+| Peak process working set | 386 MiB |
+| Local processing ratio | 0.11 |
+| Peak queued audio | 0.09 s (9/12 chunks) |
+| Near-capacity events | 1 |
+| Dropped audio | **0.00 s (0 chunks)** |
+| Processed audio | 670.66 s (67066 chunks) |
+| Final health | Healthy |
+
+**Interpretation:** zero observed dropped audio for the 11-minute run, one transient queue watermark crossing with no lost packets, and low steady ASR processing cost. Healthy is the *final* state; short warnings during the run are possible and not reproduced in the report. Does not certify 30-minute resilience or spoken-word latency. The longest queue wait can be estimated after LT-03c, but cannot establish speech-to-text latency without a timestamped word-level reference.
+
+## LT-03c capture-to-ASR instrumentation
+
+Each received audio frame is timestamped with a monotonic clock at its **capture callback**. When a frame is dequeued, the app measures the time until ASR processing **starts**. The mean and peak capture callback-to-ASR-start times and longest individual recognizer call are reported in **milliseconds**. These metrics help distinguish queue contention from ASR computation without recording or logging audio.
+
+They explicitly exclude upstream Windows audio-capture buffering, model endpoint segmentation, UI dispatch/rendering and any network/server ASR delay. A value such as 2 ms queue wait does **not** mean that the transcript appeared 2 ms after the speech.

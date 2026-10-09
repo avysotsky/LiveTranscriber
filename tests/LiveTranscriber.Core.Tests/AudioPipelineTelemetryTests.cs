@@ -80,6 +80,35 @@ public sealed class AudioPipelineTelemetryTests
     }
 
     [Fact]
+    public async Task MeasuresCaptureCallbackToRecognizerStartWaitUnderBackpressure()
+    {
+        var source = new SyntheticSource();
+        var recognizer = new BlockFirstSpeechEngine();
+        await using var sut = new TranscriptionSession(source, recognizer);
+        await sut.StartAsync();
+
+        source.Send(new float[160]); // First call blocks the processing worker.
+        await recognizer.FirstEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        source.Send(new float[160]); // Queue arrival timestamp begins here.
+        await Task.Delay(80); // Simulate a busy recognizer without sleeping the capture callback.
+
+        PipelineMetrics queued = sut.GetMetrics();
+        Assert.Equal(1, queued.QueuedChunks);
+        Assert.Equal(0, queued.DroppedChunks);
+
+        recognizer.ReleaseFirst.TrySetResult();
+        await sut.StopAsync();
+
+        PipelineMetrics finished = sut.GetMetrics();
+        Assert.Equal(2, finished.ProcessedChunks);
+        Assert.Equal(0, finished.QueuedChunks);
+        Assert.True(finished.PeakQueueWaitMilliseconds >= 60,
+            $"Expected observable queue wait after 80ms block, got {finished.PeakQueueWaitMilliseconds}ms.");
+        Assert.True(finished.AverageQueueWaitMilliseconds >= 25);
+        Assert.True(finished.PeakRecognizerCallMilliseconds >= 60);
+    }
+
+    [Fact]
     public async Task EmptyFramesAreIgnoredAndDoNotCreateFalseMetrics()
     {
         var source = new SyntheticSource();
@@ -90,6 +119,8 @@ public sealed class AudioPipelineTelemetryTests
         await sut.StopAsync();
         Assert.Equal(0, sut.GetMetrics().ProcessedAudioSeconds);
         Assert.Equal(0, sut.GetMetrics().DroppedAudioSeconds);
+        Assert.Equal(0, sut.GetMetrics().PeakQueueWaitMilliseconds);
+        Assert.Equal(0, sut.GetMetrics().PeakRecognizerCallMilliseconds);
     }
 
     private sealed class SyntheticSource : IAudioSource
