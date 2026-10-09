@@ -7,10 +7,12 @@ namespace LiveTranscriber.Core;
 public sealed class TranscriptionSession : IAsyncDisposable
 {
     private const double SamplesPerSecond = 16_000d;
+    private const int QueueCapacity = 12;
+    private const int QueueHighWatermark = 9; // 75% of the fixed 12-chunk buffer
     private readonly IAudioSource _source;
     private readonly ISpeechEngine _engine;
     private readonly object _queueGate = new();
-    private readonly Channel<float[]> _queue = Channel.CreateBounded<float[]>(new BoundedChannelOptions(12)
+    private readonly Channel<float[]> _queue = Channel.CreateBounded<float[]>(new BoundedChannelOptions(QueueCapacity)
     {
         // The producer can evict the oldest frame when the queue is full.
         SingleReader = false,
@@ -27,6 +29,10 @@ public sealed class TranscriptionSession : IAsyncDisposable
     private long _processedSamples;
     private long _processedChunks;
     private long _processorTicks;
+    private int _queuedChunks;
+    private int _peakQueuedChunks;
+    private long _nearCapacityEvents;
+    private bool _queueWasNearCapacity;
 
     public event Action<TranscriptUpdate>? TextAvailable;
     public event Action<Exception>? Failed;
@@ -61,12 +67,16 @@ public sealed class TranscriptionSession : IAsyncDisposable
 
     public PipelineMetrics GetMetrics()
     {
-        long queued, peak, dropped;
+        long queued, peak, dropped, pressureEvents;
+        int chunks, peakChunks;
         lock (_queueGate)
         {
             queued = _queuedSamples;
             peak = _peakQueuedSamples;
             dropped = _droppedSamples;
+            chunks = _queuedChunks;
+            peakChunks = _peakQueuedChunks;
+            pressureEvents = _nearCapacityEvents;
         }
 
         return new PipelineMetrics(
@@ -76,7 +86,11 @@ public sealed class TranscriptionSession : IAsyncDisposable
             PeakQueuedAudioSeconds: peak / SamplesPerSecond,
             ProcessedAudioSeconds: ProcessedAudioSeconds,
             ProcessingRatio: ProcessingRatio,
-            ProcessedChunks: Interlocked.Read(ref _processedChunks));
+            ProcessedChunks: Interlocked.Read(ref _processedChunks),
+            QueuedChunks: chunks,
+            PeakQueuedChunks: peakChunks,
+            QueueCapacityChunks: QueueCapacity,
+            NearCapacityEvents: pressureEvents);
     }
 
     public async Task StartAsync(CancellationToken cancellationToken = default)
@@ -109,6 +123,8 @@ public sealed class TranscriptionSession : IAsyncDisposable
                 {
                     if (!_queue.Reader.TryRead(out samples)) continue;
                     _queuedSamples -= samples.Length;
+                    _queuedChunks--;
+                    if (_queuedChunks < QueueHighWatermark) _queueWasNearCapacity = false;
                 }
 
                 long begin = Stopwatch.GetTimestamp();
@@ -137,6 +153,8 @@ public sealed class TranscriptionSession : IAsyncDisposable
                 if (_queue.Reader.TryRead(out float[]? oldest))
                 {
                     _queuedSamples -= oldest.Length;
+                    _queuedChunks--;
+                    if (_queuedChunks < QueueHighWatermark) _queueWasNearCapacity = false;
                     _droppedSamples += oldest.Length;
                     Interlocked.Increment(ref _droppedChunks);
                 }
@@ -148,7 +166,14 @@ public sealed class TranscriptionSession : IAsyncDisposable
                 }
             }
             _queuedSamples += samples.Length;
+            _queuedChunks++;
             _peakQueuedSamples = Math.Max(_peakQueuedSamples, _queuedSamples);
+            _peakQueuedChunks = Math.Max(_peakQueuedChunks, _queuedChunks);
+            if (_queuedChunks >= QueueHighWatermark && !_queueWasNearCapacity)
+            {
+                _nearCapacityEvents++;
+                _queueWasNearCapacity = true;
+            }
         }
     }
 

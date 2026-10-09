@@ -19,6 +19,7 @@ public partial class MainWindow : Window
     private double _peakCpuPercent;
     private double _peakMemoryMiB;
     private double _lastDroppedAudioSeconds;
+    private long _lastNearCapacityEvents;
     private long _telemetrySamples;
     private string _previousDiagnosticReport = "No diagnostic session has been completed.";
     private readonly DispatcherTimer _resourceTimer;
@@ -114,6 +115,7 @@ public partial class MainWindow : Window
             _peakCpuPercent = 0;
             _peakMemoryMiB = 0;
             _lastDroppedAudioSeconds = 0;
+            _lastNearCapacityEvents = 0;
             _telemetrySamples = 0;
             HealthText.Text = "Health: warming up";
             ResourceText.Text = "Gathering CPU, RAM, queue and ASR processing metrics...";
@@ -177,15 +179,19 @@ public partial class MainWindow : Window
         PipelineMetrics metrics = _session.GetMetrics();
         double newLoss = Math.Max(0, metrics.DroppedAudioSeconds - _lastDroppedAudioSeconds);
         _lastDroppedAudioSeconds = metrics.DroppedAudioSeconds;
+        long newNearFull = Math.Max(0, metrics.NearCapacityEvents - _lastNearCapacityEvents);
+        _lastNearCapacityEvents = metrics.NearCapacityEvents;
         bool cloud = EngineSelect.SelectedIndex == 1;
         PipelineHealth health = _healthMonitor.Observe(new PipelineHealthReading(
             cpu, metrics.QueuedAudioSeconds, metrics.ProcessingRatio,
-            newLoss, cloud, metrics.ProcessedAudioSeconds));
+            newLoss, cloud, metrics.ProcessedAudioSeconds,
+            metrics.QueuedChunks, metrics.QueueCapacityChunks, newNearFull));
         string ratioName = cloud ? "Client upload/audio" : "Local processing RTF";
 
         ResourceText.Text = $"CPU {cpu:0.0}% (peak {_peakCpuPercent:0.0}%)  |  " +
             $"RAM {memory:0} MiB (peak {_peakMemoryMiB:0})  |  " +
-            $"Queue {metrics.QueuedAudioSeconds:0.00}s  |  " +
+            $"Queue {metrics.QueuedAudioSeconds:0.00}s ({metrics.QueuedChunks}/{metrics.QueueCapacityChunks})  |  " +
+            $"Near-full events {metrics.NearCapacityEvents}  |  " +
             $"Lost {metrics.DroppedAudioSeconds:0.00}s  |  " +
             $"{ratioName} {metrics.ProcessingRatio:0.00}";
         HealthText.Text = health switch
@@ -210,7 +216,8 @@ public partial class MainWindow : Window
             $"Capture: {(CaptureSelect.SelectedIndex == 0 ? "All output" : "Selected application")}",
             $"Peak process CPU: {cpuPeak}",
             $"Peak process working set: {ramPeak}",
-            $"Peak queued audio: {metrics.PeakQueuedAudioSeconds:0.00}s",
+            $"Peak queued audio: {metrics.PeakQueuedAudioSeconds:0.00}s ({metrics.PeakQueuedChunks}/{metrics.QueueCapacityChunks} chunks)",
+            $"Near-capacity queue events: {metrics.NearCapacityEvents}",
             $"Remaining queued audio: {metrics.QueuedAudioSeconds:0.00}s",
             $"Dropped audio: {metrics.DroppedAudioSeconds:0.00}s ({metrics.DroppedChunks} chunks)",
             $"Processed audio: {metrics.ProcessedAudioSeconds:0.00}s ({metrics.ProcessedChunks} chunks)",

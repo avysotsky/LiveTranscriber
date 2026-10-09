@@ -8,7 +8,10 @@ public sealed record PipelineHealthReading(
     double LocalProcessingRatio,
     double NewlyDroppedAudioSeconds,
     bool IsCloud,
-    double ProcessedAudioSeconds);
+    double ProcessedAudioSeconds,
+    int QueuedChunks = 0,
+    int QueueCapacityChunks = 12,
+    long NewNearCapacityEvents = 0);
 
 /// <summary>
 /// In-memory health indicator with 3-sample hysteresis to avoid status flicker.
@@ -26,8 +29,10 @@ public sealed class PipelineHealthMonitor
             return State;
 
         bool lostAudio = reading.NewlyDroppedAudioSeconds > 0;
-        bool pressure = lostAudio
-            || reading.QueuedAudioSeconds >= 0.6
+        bool approachedCapacity = reading.NewNearCapacityEvents > 0;
+        bool queueBusy = reading.QueueCapacityChunks > 0
+            && reading.QueuedChunks >= Math.Ceiling(reading.QueueCapacityChunks * 0.75);
+        bool pressure = lostAudio || approachedCapacity || queueBusy
             || reading.ApplicationCpuPercent >= 20
             || (!reading.IsCloud && reading.LocalProcessingRatio >= 0.9);
 
@@ -35,7 +40,7 @@ public sealed class PipelineHealthMonitor
         {
             _consecutiveGood = 0;
             _consecutiveBad++;
-            if (lostAudio || _consecutiveBad >= 3)
+            if (lostAudio || approachedCapacity || _consecutiveBad >= 3)
                 State = PipelineHealth.UnderPressure;
         }
         else

@@ -11,4 +11,8 @@ public sealed record PipelineMetrics(
     double PeakQueuedAudioSeconds,
     double ProcessedAudioSeconds,
     double ProcessingRatio,
-    long ProcessedChunks);
+    long ProcessedChunks,
+    int QueuedChunks,
+    int PeakQueuedChunks,
+    int QueueCapacityChunks,
+    long NearCapacityEvents);
