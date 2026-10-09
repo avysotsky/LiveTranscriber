@@ -64,11 +64,20 @@ public sealed class TranslationPipelineTests
         var backend = new BlockingFirstTranslator();
         await using var sut = new TranslationPipeline(backend, TimeSpan.Zero);
         var previews = new ConcurrentQueue<string>();
-        sut.PreviewTranslated += (text, _) => previews.Enqueue(text);
+        var latest = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        sut.PreviewTranslated += (text, _) =>
+        {
+            previews.Enqueue(text);
+            latest.TrySetResult(text);
+        };
         Assert.True(sut.TryEnqueuePreview("old interim"));
         await backend.FirstEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
         Assert.True(sut.TryEnqueuePreview("current interim"));
         backend.ReleaseFirst.TrySetResult();
+        // Preview results are intentionally discarded on Stop; observe the
+        // latest interim while the pipeline is still running.
+        Assert.Equal("current interim",
+            await latest.Task.WaitAsync(TimeSpan.FromSeconds(5)));
         await sut.CompleteAsync(TimeSpan.FromSeconds(5));
         Assert.Equal(new[] { "current interim" }, previews.ToArray());
     }
