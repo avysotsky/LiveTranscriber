@@ -1,4 +1,5 @@
 using System.Threading.Channels;
+using System.Diagnostics;
 
 namespace LiveTranscriber.Core;
 
@@ -17,8 +18,27 @@ public sealed class TranscriptionSession : IAsyncDisposable
     private int _running;
     private int _started;
     private long _dropped;
+    private long _processedSamples;
+    private long _processorTicks;
 
     public long DroppedChunks => Interlocked.Read(ref _dropped);
+
+    /// <summary>Seconds of audio processed by the recognizer.</summary>
+    public double ProcessedAudioSeconds => Interlocked.Read(ref _processedSamples) / 16000d;
+
+    /// <summary>
+    /// CPU-side recognizer processing time divided by audio duration.
+    /// For cloud this measures only upload/write time, NOT server-side ASR latency.
+    /// </summary>
+    public double ProcessingRatio
+    {
+        get
+        {
+            long frames = Interlocked.Read(ref _processedSamples);
+            if (frames == 0) return 0;
+            return Interlocked.Read(ref _processorTicks) / (double)Stopwatch.Frequency / (frames / 16000d);
+        }
+    }
     public event Action<TranscriptUpdate>? TextAvailable;
     public event Action<Exception>? Failed;
 
@@ -45,7 +65,15 @@ public sealed class TranscriptionSession : IAsyncDisposable
                 try
                 {
                     await foreach (float[] samples in _queue.Reader.ReadAllAsync())
-                        await _engine.ProcessAsync(samples).ConfigureAwait(false);
+                        {
+                        long begin = Stopwatch.GetTimestamp();
+                        try { await _engine.ProcessAsync(samples).ConfigureAwait(false); }
+                        finally
+                        {
+                            Interlocked.Add(ref _processorTicks, Stopwatch.GetTimestamp() - begin);
+                            Interlocked.Add(ref _processedSamples, samples.Length);
+                        }
+                    }
                 }
                 catch (Exception ex) { OnFailed(ex); }
             });
