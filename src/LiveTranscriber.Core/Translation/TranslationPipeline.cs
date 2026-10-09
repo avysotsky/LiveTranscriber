@@ -22,6 +22,7 @@ public sealed class TranslationPipeline : IAsyncDisposable
     private long _generation;
     private int _accepting = 1;
     private int _pending;
+    private Phrase? _carried;
 
     public event Action<string, long>? Translated;
     public event Action<string>? Error;
@@ -63,8 +64,17 @@ public sealed class TranslationPipeline : IAsyncDisposable
         {
             while (await _queue.Reader.WaitToReadAsync(_shutdown.Token).ConfigureAwait(false))
             {
-                if (!_queue.Reader.TryRead(out var first)) continue;
-                Interlocked.Decrement(ref _pending);
+                Phrase first;
+                if (_carried is { } carried)
+                {
+                    first = carried;
+                    _carried = null;
+                }
+                else
+                {
+                    if (!_queue.Reader.TryRead(out first)) continue;
+                    Interlocked.Decrement(ref _pending);
+                }
 
                 var phrases = new List<string> { first.Text };
                 // Fold up to 4 speech endpoints into one Groq call when input is arriving
@@ -74,6 +84,12 @@ public sealed class TranslationPipeline : IAsyncDisposable
                     Interlocked.Decrement(ref _pending);
                     if (next.Generation == first.Generation)
                         phrases.Add(next.Text);
+                    else
+                    {
+                        // Do not lose the first utterance after ClearPending.
+                        _carried = next;
+                        break;
+                    }
                 }
                 if (first.Generation != Generation) continue;
 
