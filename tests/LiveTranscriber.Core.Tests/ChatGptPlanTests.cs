@@ -87,13 +87,12 @@ public sealed class ChatGptPlanTests
     }
 
     [Fact]
-    public void SessionBeginsDisconnectedAndClearDoesNotPersistAuth()
+    public async Task SessionBeginsDisconnectedAndClearDoesNotPersistAuth()
     {
-        var connection = new ChatGptPlanConnection();
+        await using var connection = new ChatGptPlanConnection();
         Assert.False(connection.IsConnected);
         Assert.Contains("Not connected", connection.Status);
         connection.Disconnect();
         Assert.False(connection.IsConnected);
-        connection.DisposeAsync().AsTask().GetAwaiter().GetResult();
     }
 }
