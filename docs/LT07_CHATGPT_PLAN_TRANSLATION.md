@@ -34,3 +34,17 @@ Official docs:
 - https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference
 - https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations
 - https://openai.com/policies/sign-in-with-chatgpt-terms/
+
+
+## LT-08 — incremental low-latency Russian translation
+
+A field report found GPT translation was slow and seemed to wait until long speech phrases finished. Root cause in LT-07: a 4-second interim submission limit; a mandatory 2.5-second idle delay **after** each cloud request; and SSE `response.output_text.delta` events buffered until `response.completed` before the WPF panel received any Russian text.
+
+Changes:
+
+- GPT **interim translation** checks the latest English hypothesis on a dedicated 500ms UI timer (independent of 2s CPU telemetry), with a minimum 1.5s submission cadence while the translator is idle. The interim input is limited to the most recent 240 characters on a word boundary; large Sherpa utterances need not finish to be translated. Interim text is *provisional*, not an archival translation of every earlier word.
+- **SSE streaming** now exposes cumulative Russian output as soon as the first output-text delta is available, with subsequent UI updates throttled to approximately 120ms or 32 more characters. The app displays this as a replaceable preview (ellipsis). Only a fully completed Responses stream is committed to final Russian text. Interrupted/failed streams clear partial output.
+- The explicit, fixed 2.5-second post-request delay is reduced to 600ms **for ChatGPT plan only**. Groq keeps its existing 2.2s pacing; Local OPUS-MT remains unthrottled. ChatGPT preview is not queued while there is an active or pending translation, preventing stale backlog.
+- There is **no bypass of plan rate limits**: HTTP 429 and errors are surfaced. Faster previews may use more of a plan's eligible request budget. English audio is never uploaded in the Local ASR mode and its processing is not blocked by the translator.
+
+Tradeoffs: GPT still has server-side time-to-first-token latency, subject to chosen plan model and external network. Some speech endings and final sentences may be retranslated after temporary interim translations. Because Sherpa can revise an unfinished transcript, provisional Russian is deliberately replaceable; the latest 240-char preview window is not a comprehensive transcript. For a high-fidelity complete translation, wait for final recognized English segments. Test with real speech to measure subjective time-to-first-Russian and plan consumption.
