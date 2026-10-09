@@ -67,6 +67,37 @@ public sealed class ChatGptPlanTests
     }
 
     [Fact]
+    public async Task StreamingTranslationPublishesRussianBeforeResponseCompleted()
+    {
+        var firstVisible = new List<string>();
+        using var reader = new StringReader("""
+            data: {"type":"response.output_text.delta","delta":"Перевод"}
+            data: {"type":"response.output_text.delta","delta":" уже "}
+            data: {"type":"response.output_text.delta","delta":"виден."}
+            data: {"type":"response.completed","response":{"status":"completed"}}
+            """);
+        string result = await ChatGptPlanTranslator.ReadCompletedTranslationAsync(
+            reader, CancellationToken.None, text => firstVisible.Add(text));
+        Assert.NotEmpty(firstVisible);
+        Assert.Equal("Перевод", firstVisible[0]);
+        Assert.Equal("Перевод уже виден.", result);
+    }
+
+    [Fact]
+    public async Task IncompleteStreamMayPublishProvisionalTextButCannotSucceed()
+    {
+        var previews = new List<string>();
+        using var reader = new StringReader("""
+            data: {"type":"response.output_text.delta","delta":"незаконченный"}
+            data: {"type":"response.incomplete"}
+            """);
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            ChatGptPlanTranslator.ReadCompletedTranslationAsync(
+                reader, CancellationToken.None, text => previews.Add(text)));
+        Assert.Equal(new[] { "незаконченный" }, previews);
+    }
+
+    [Fact]
     public async Task InterruptedStreamCannotBeMistakenForSuccess()
     {
         using var reader = new StringReader(
