@@ -15,4 +15,7 @@ public sealed record PipelineMetrics(
     int QueuedChunks,
     int PeakQueuedChunks,
     int QueueCapacityChunks,
-    long NearCapacityEvents);
+    long NearCapacityEvents,
+    double AverageQueueWaitMilliseconds,
+    double PeakQueueWaitMilliseconds,
+    double PeakRecognizerCallMilliseconds);
