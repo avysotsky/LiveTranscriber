@@ -1,10 +1,11 @@
 <Window x:Class="LiveTranscriber.Desktop.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="LiveTranscriber — English speaker audio" Height="600" Width="850"
-        MinHeight="410" MinWidth="740">
+        Title="LiveTranscriber — English → Russian" Height="720" Width="930"
+        MinHeight="520" MinWidth="740">
   <Grid Margin="18">
     <Grid.RowDefinitions>
+      <RowDefinition Height="Auto"/>
       <RowDefinition Height="Auto"/>
       <RowDefinition Height="Auto"/>
       <RowDefinition Height="Auto"/>
@@ -39,11 +40,34 @@
                 ToolTip="Select a window or type a numeric process ID"/>
       <Button x:Name="RefreshButton" Width="80" Content="Refresh" Click="Refresh_Click" IsEnabled="False"/>
     </StackPanel>
-    <TextBox x:Name="TranscriptBox" Grid.Row="3" FontSize="19" FontFamily="Segoe UI"
-             Padding="12" Background="#FFF9FAFB" BorderBrush="#FFCCD2DB" IsReadOnly="True"
-             VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
-             TextWrapping="Wrap" AcceptsReturn="True"/>
-    <StackPanel Grid.Row="4" Margin="0,10,0,0">
+    <StackPanel Grid.Row="3" Orientation="Horizontal" Margin="0,0,0,10">
+      <CheckBox x:Name="TranslateToggle" Content="Auto-translate EN → RU (Groq cloud)"
+                VerticalAlignment="Center" IsChecked="False" Margin="0,0,16,0"
+                ToolTip="Only finalized English sentences are sent to Groq; transcription stays local when Local is selected."/>
+      <TextBlock x:Name="TranslationStatus" VerticalAlignment="Center" Foreground="#555555"
+                 Text="Russian translation disabled"/>
+    </StackPanel>
+    <Grid Grid.Row="4">
+      <Grid.RowDefinitions>
+        <RowDefinition Height="Auto"/>
+        <RowDefinition Height="*"/>
+        <RowDefinition Height="Auto"/>
+        <RowDefinition Height="*"/>
+      </Grid.RowDefinitions>
+      <TextBlock Grid.Row="0" FontSize="14" FontWeight="SemiBold" Margin="0,0,0,5"
+                 Text="English — live transcription"/>
+      <TextBox x:Name="TranscriptBox" Grid.Row="1" FontSize="18" FontFamily="Segoe UI"
+               Padding="10" Background="#FFF9FAFB" BorderBrush="#FFCCD2DB" IsReadOnly="True"
+               VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
+               TextWrapping="Wrap" AcceptsReturn="True" Margin="0,0,0,10"/>
+      <TextBlock Grid.Row="2" FontSize="14" FontWeight="SemiBold" Margin="0,0,0,5"
+                 Text="Русский — перевод завершённых фраз"/>
+      <TextBox x:Name="RussianBox" Grid.Row="3" FontSize="18" FontFamily="Segoe UI"
+               Padding="10" Background="#FFF6F9F6" BorderBrush="#FFCCD2DB" IsReadOnly="True"
+               VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
+               TextWrapping="Wrap" AcceptsReturn="True"/>
+    </Grid>
+    <StackPanel Grid.Row="5" Margin="0,10,0,0">
       <TextBlock x:Name="StatusText" Text="Ready. No microphone is opened." Foreground="#555555"/>
       <TextBlock x:Name="ResourceText" Text="CPU/RAM measurements available after Start."
                  TextWrapping="Wrap" Foreground="#444444"/>
