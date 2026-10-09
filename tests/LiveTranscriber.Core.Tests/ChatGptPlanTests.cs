@@ -25,6 +25,18 @@ public sealed class ChatGptPlanTests
         Assert.NotEqual(verifier, challenge);
     }
 
+    [Fact]
+    public void ReturningAuthorizationUsesPreviouslyIssuedClient()
+    {
+        string url = ChatGptPlanConnection.BuildAuthorizeUrl(
+            new Uri("http://127.0.0.1:1455/auth/callback"),
+            "urn:uuid:00000000-0000-0000-0000-000000000001",
+            "state", "nonce", "challenge", "oaiapp_existing");
+        Assert.Contains("client_id=oaiapp_existing", url);
+        Assert.DoesNotContain("agent_name_hint", url);
+        Assert.DoesNotContain("dynamic_agent_client", url);
+    }
+
     [Theory]
     [InlineData("openid profile email offline_access resource.invoke chatgpt.tokens.use.direct", true)]
     [InlineData("openid profile email", false)]
