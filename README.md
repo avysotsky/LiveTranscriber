@@ -57,7 +57,7 @@ Select Local or Cloud. For source, choose **All speaker output** (works like LT-
 
 The bottom of the UI reports **process CPU share, working-set RAM and session peaks; queued audio duration; audio-loss seconds; and client processing ratio**. In Local mode the ratio is local inference RTF; in Cloud mode it measures upload/write time only, **not** service latency. After pressing Stop, use **Copy diagnostics** to copy a privacy-safe session report (no speech or transcript text). Counters are otherwise kept only in memory.
 
-The health indicator warns on sustained high CPU (20%+), queue backlog (0.6 s+), local RTF (0.9+) or any new dropped audio. Three clean samples are required for recovery. **It does not automatically upload audio or switch providers.** See [LT-03 performance acceptance plan](docs/LT03_PERFORMANCE_VALIDATION.md) for the 30-minute test procedure.
+The health indicator warns on sustained high CPU (20%+), **queue occupancy (at least 9 of 12 chunks)**, local RTF (0.9+) or any new dropped audio. A short queue fill to 9 slots is recorded as a **near-capacity event** even if it drains before the next UI update; this is a warning before potential loss, not evidence of actual dropped audio. Three clean samples are required for recovery. **It does not automatically upload audio or switch providers.** See [LT-03 performance acceptance plan](docs/LT03_PERFORMANCE_VALIDATION.md) for the 30-minute test procedure.
 
 ## Resource constraints and verification
 
