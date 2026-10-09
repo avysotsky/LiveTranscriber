@@ -50,6 +50,7 @@ public sealed class AudioPipelineTelemetryTests
         public event Action<float[]>? SamplesCaptured;
         public event Action<Exception>? Failed;
         public void Send(float[] sample) => SamplesCaptured?.Invoke(sample);
+        public void SignalFailure(Exception error) => Failed?.Invoke(error);
         public void Start() { }
         public void Stop() { }
         public void Dispose() { }
@@ -62,6 +63,8 @@ public sealed class AudioPipelineTelemetryTests
         public TaskCompletionSource ReleaseFirst { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public event Action<TranscriptUpdate>? TextAvailable;
         public event Action<Exception>? Failed;
+        public void EmitText(string text) => TextAvailable?.Invoke(new TranscriptUpdate(text, true));
+        public void SignalFailure(Exception error) => Failed?.Invoke(error);
 
         public Task StartAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
 
