@@ -21,6 +21,8 @@ public partial class MainWindow : Window
     private DateTimeOffset _lastPreviewSubmitted;
     private TranslationMetrics? _lastTranslationMetrics;
     private bool _translationWasEnabled;
+    private bool _translationUsesCloud;
+    private string TranslationProviderName => _translationUsesCloud ? "Groq" : "Local OPUS-MT";
     private string _lastTranslationError = string.Empty;
     private SystemResourceSampler _resourceSampler = new();
     private PipelineHealthMonitor _healthMonitor = new();
@@ -103,6 +105,7 @@ public partial class MainWindow : Window
         try
         {
             _translationWasEnabled = TranslateToggle.IsChecked == true;
+            _translationUsesCloud = TranslationProviderSelect.SelectedIndex == 1;
             _lastTranslationMetrics = null;
             _lastTranslationError = string.Empty;
             _previewRussian = string.Empty;
@@ -110,10 +113,13 @@ public partial class MainWindow : Window
             _lastPreviewSubmitted = DateTimeOffset.MinValue;
             if (_translationWasEnabled)
             {
-                // Explicit user opt-in is required for sending English text to Groq.
-                var translator = new GroqRussianTranslator(
-                    Environment.GetEnvironmentVariable("GROQ_API_KEY") ?? "");
-                translationCandidate = new TranslationPipeline(translator);
+                // Groq text upload requires *both* selecting Groq and enabling translation.
+                // Local worker never sends HTTP requests or downloads a model.
+                ITextTranslator translator = _translationUsesCloud
+                    ? new GroqRussianTranslator(Environment.GetEnvironmentVariable("GROQ_API_KEY") ?? "")
+                    : await LocalOpusMtTranslator.StartAsync();
+                translationCandidate = new TranslationPipeline(translator,
+                    _translationUsesCloud ? TimeSpan.FromMilliseconds(2200) : TimeSpan.Zero);
                 TranslationPipeline active = translationCandidate;
                 active.Translated += (russianText, generation) =>
                     _ = Dispatcher.BeginInvoke(() =>
@@ -145,9 +151,11 @@ public partial class MainWindow : Window
                         }
                     });
                 _translations = active;
-                TranslationStatus.Text = "RU enabled — interim and finalized English text sent to Groq.";
+                TranslationStatus.Text = _translationUsesCloud
+                    ? "RU enabled (Groq cloud): English interim and final text are uploaded."
+                    : "RU enabled (local OPUS-MT): English text stays on this machine.";
             }
-            else TranslationStatus.Text = "RU disabled — check Auto-translate to enable.";
+            else TranslationStatus.Text = "RU disabled — select a provider and check Auto-translate.";
 
             CaptureSourceSelection selection = GetSelection();
             IAudioSource audio = selection.Mode == CaptureSourceMode.DeviceLoopback
@@ -195,6 +203,7 @@ public partial class MainWindow : Window
     {
         EngineSelect.IsEnabled = enabled;
         TranslateToggle.IsEnabled = enabled;
+        TranslationProviderSelect.IsEnabled = enabled;
         TestGroqButton.IsEnabled = enabled;
         CaptureSelect.IsEnabled = enabled;
         bool app = enabled && CaptureSelect.SelectedIndex == 1;
@@ -349,10 +358,10 @@ public partial class MainWindow : Window
 
     private string BuildTranslationStatus(TranslationMetrics? metrics)
     {
-        if (!_translationWasEnabled) return "RU: off (cloud translation not enabled)";
-        if (metrics is null) return "RU: enabled; no phrases processed yet";
-        string state = $"RU final {metrics.FinalPhrasesQueued}, interim {metrics.PreviewPhrasesQueued}, " +
-            $"Groq requests {metrics.ApiRequestsStarted}, OK {metrics.ApiRequestsSucceeded}, " +
+        if (!_translationWasEnabled) return "RU: off (translation disabled)";
+        if (metrics is null) return $"RU ({TranslationProviderName}): enabled; no phrases processed yet";
+        string state = $"RU ({TranslationProviderName}): final {metrics.FinalPhrasesQueued}, interim {metrics.PreviewPhrasesQueued}, " +
+            $"requests {metrics.ApiRequestsStarted}, OK {metrics.ApiRequestsSucceeded}, " +
             $"failed {metrics.ApiRequestsFailed}, pending {metrics.PendingPhrases}";
         return string.IsNullOrEmpty(_lastTranslationError)
             ? state : state + " | Error: " + _lastTranslationError;
@@ -368,26 +377,32 @@ public partial class MainWindow : Window
     {
         if (TranslateToggle.IsChecked != true)
         {
-            TranslationStatus.Text = "RU TEST: enable Auto-translate first (Groq sends text to the cloud).";
+            TranslationStatus.Text = "RU TEST: check Auto-translate to enable the selected provider.";
             return;
         }
 
+        bool cloud = TranslationProviderSelect.SelectedIndex == 1;
         TestGroqButton.IsEnabled = false;
-        TranslationStatus.Text = "RU TEST: contacting Groq with a fixed example sentence...";
+        TranslationStatus.Text = cloud
+            ? "RU TEST: contacting Groq with a fixed example sentence..."
+            : "RU TEST: starting the offline OPUS-MT worker...";
         try
         {
-            await using var translator = new GroqRussianTranslator(
-                Environment.GetEnvironmentVariable("GROQ_API_KEY") ?? "");
+            await using ITextTranslator translator = cloud
+                ? new GroqRussianTranslator(Environment.GetEnvironmentVariable("GROQ_API_KEY") ?? "")
+                : await LocalOpusMtTranslator.StartAsync();
             string result = await translator.TranslateToRussianAsync(
                 "Can you explain dependency injection in ASP.NET Core?", CancellationToken.None);
-            TranslationStatus.Text = "RU TEST: Groq connection OK.";
-            MessageBox.Show(this, result, "Groq translation test — Russian",
+            TranslationStatus.Text = cloud
+                ? "RU TEST: Groq connection OK."
+                : "RU TEST: local translation OK; no network used.";
+            MessageBox.Show(this, result, cloud ? "Groq translation test" : "Offline translation test",
                 MessageBoxButton.OK, MessageBoxImage.Information);
         }
         catch (Exception ex)
         {
             string safeMessage = ex is InvalidOperationException
-                ? ex.Message : "Groq request failed. Check network and proxy settings.";
+                ? ex.Message : "Translator failed. Check the local model or network configuration.";
             TranslationStatus.Text = "RU TEST FAILED: " + safeMessage;
         }
         finally { TestGroqButton.IsEnabled = _session is null; }
