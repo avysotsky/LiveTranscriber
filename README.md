@@ -6,7 +6,7 @@ Windows **speaker-output-only** English live transcription with optional **autom
 - **Cloud:** Azure Speech continuous recognition. Audio leaves the machine **only** after selecting Cloud and pressing Start.
 - **Capture:** Windows WASAPI render-device loopback **or** selected application process-tree loopback; the app never opens a microphone.
 - **Audio:** downmix and stream resampling to mono 16 kHz, bounded queue (12 chunks), interim/final text.
-- **Translation:** optional Groq GPT-OSS 20B English → Russian, translating only **finalized** English phrases; English and Russian appear in separate panels.
+- **Translation:** optional Groq GPT-OSS 20B English → Russian, translating both **ongoing interim hypotheses** (replaceable preview) and **finalized English phrases**; English and Russian appear in separate panels.
 - **Privacy:** no recording or transcript persistence; secrets only from process environment variables. With translation enabled, **English finalized text leaves the machine** (even when ASR is Local). Raw PCM audio is never sent to Groq.
 
 **Capture scopes:** "All speaker output" captures the entire default output device; "Selected application" captures a selected PID and child processes. This does not capture the microphone directly, but microphone monitoring/echo replayed through the selected audio stream may still appear. No silent fallback from app capture to device capture is allowed. Device selection and automatic provider fallback remain future increments.
@@ -57,11 +57,12 @@ $env:GROQ_API_KEY = 'YOUR_GROQ_API_KEY'
 ```
 
 3. Run LiveTranscriber; keep **Engine: Local (offline)** and select your application in **Capture** if you want local audio recognition. Check **Auto-translate EN → RU (Groq cloud)** before pressing Start.
-4. As soon as Sherpa/ Azure emits a **final** English phrase, LiveTranscriber queues its text for translation. English remains visible, and Russian text appears in its own lower pane. Use **Copy** to copy both. **Clear** empties both panes and skips results from previous queued phrases. **Stop** gives pending translations up to 10 seconds to finish.
+4. The app automatically translates changed **interim English hypotheses** approximately every 4 seconds even during continuous speech. Interim Russian appears with an ellipsis and is replaced on new hypotheses. Once Sherpa/Azure emits a **final** English phrase, its stable Russian translation is appended. English remains visible in the upper panel. Use **Copy** to copy both. **Clear** empties both panes and ignores outdated responses. **Stop** gives pending final translations up to 10 seconds to finish.
+5. Before the first session, press **Test Groq** with the checkbox enabled. This sends only a **fixed sample sentence**, not interview audio or text, and displays the Russian result or a safe connection/API error.
 
-**Important privacy distinction:** when Translate is checked, the finalized **English transcript text is uploaded to Groq**, even if Engine is Local. Raw audio never goes to Groq. Translation is OFF by default. Do not enable it if the interview's confidentiality rules prohibit third-party services. Disabling the translation checkbox requires stopping and restarting; no automatic fallback or provider switching takes place.
+**Important privacy distinction:** when Translate is checked, **interim and finalized English transcript text are uploaded to Groq**, even if Engine is Local. Raw audio never goes to Groq. Translation is OFF by default. Do not enable it if the interview's confidentiality rules prohibit third-party services. Disabling the translation checkbox requires stopping and restarting; no automatic fallback or provider switching takes place.
 
-The implementation uses Groq Chat Completions (`openai/gpt-oss-20b`). It coalesces up to four final phrases while under load and throttles requests to approximately one call per 2.2 seconds. Free-tier and rate limits may cause delays/errors; these are shown in the Translation status instead of interrupting English ASR. It never stores API keys, uploads intermediate hypotheses, or saves translations to files. Cloud requests can incur usage charges depending on the Groq plan.
+The implementation uses Groq Chat Completions (`openai/gpt-oss-20b`). It coalesces up to four final phrases while under load and throttles requests to approximately one call per 2.2 seconds. Free-tier and rate limits may cause delays/errors; the Translation status shows **final/interim queued counts, requests attempted/succeeded/failed, backlog and the latest safe error** without interrupting English ASR. It never stores API keys or saves translations to files. With translation enabled, both unfinished and finalized **English text are sent to Groq**; audio is not. Incoming intermediate hypotheses are throttled to limit API usage. Cloud requests can incur usage charges depending on the Groq plan.
 
 ## Build, test, run
 
