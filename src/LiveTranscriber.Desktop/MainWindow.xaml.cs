@@ -20,8 +20,7 @@ public partial class MainWindow : Window
         async token => await LocalOpusMtTranslator.StartAsync(cancellationToken: token)
             .ConfigureAwait(false));
     private readonly StringBuilder _confirmed = new();
-    private readonly StringBuilder _russian = new();
-    private string _previewRussian = string.Empty;
+    private readonly RussianTranscriptBuffer _russianText = new();
     private string _lastPreviewEnglish = string.Empty;
     private readonly IncrementalEnglishChunker _chatGptChunks = new();
     private DateTimeOffset _lastPreviewSubmitted;
@@ -177,7 +176,6 @@ public partial class MainWindow : Window
             _translationUsesChatGpt = TranslationProviderSelect.SelectedIndex == 2;
             _lastTranslationMetrics = null;
             _lastTranslationError = string.Empty;
-            _previewRussian = string.Empty;
             _lastPreviewEnglish = string.Empty;
             _lastPreviewSubmitted = DateTimeOffset.MinValue;
             _chatGptChunks.Clear();
@@ -202,8 +200,7 @@ public partial class MainWindow : Window
                     {
                         if (!ReferenceEquals(_translations, active) ||
                             generation != active.Generation) return;
-                        _russian.AppendLine(russianText.Trim());
-                        _previewRussian = string.Empty;
+                        _russianText.Commit(russianText);
                         _lastTranslationError = string.Empty;
                         RenderRussian();
                         RefreshTranslationStatus();
@@ -213,13 +210,8 @@ public partial class MainWindow : Window
                     {
                         if (!ReferenceEquals(_translations, active) ||
                             generation != active.Generation) return;
-                        string next = russianText.Trim();
-                        // Do not replace a readable provisional translation
-                        // with only the first token of the next request.
-                        int threshold = Math.Min(24, _previewRussian.Length / 2);
-                        if (_previewRussian.Length > 0 && next.Length < threshold) return;
-                        if (next.Length > 0) _previewRussian = next;
-                        RenderRussian();
+                        if (_russianText.UpdatePreview(russianText))
+                            RenderRussian();
                         RefreshTranslationStatus();
                     });
                 active.Error += message =>
@@ -482,9 +474,7 @@ public partial class MainWindow : Window
 
     private void RenderRussian()
     {
-        RussianBox.Text = _russian.ToString() +
-            (string.IsNullOrWhiteSpace(_previewRussian)
-                ? string.Empty : _previewRussian + " …");
+        RussianBox.Text = _russianText.Text;
         RussianBox.ScrollToEnd();
     }
 
@@ -619,8 +609,7 @@ public partial class MainWindow : Window
         _translations?.ClearPending();
         _chatGptChunks.Clear();
         _confirmed.Clear();
-        _russian.Clear();
-        _previewRussian = string.Empty;
+        _russianText.Clear();
         _lastPreviewEnglish = string.Empty;
         _hypothesis = string.Empty;
         RenderRussian();
