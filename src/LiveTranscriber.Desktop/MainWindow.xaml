@@ -9,6 +9,7 @@
       <RowDefinition Height="Auto"/>
       <RowDefinition Height="Auto"/>
       <RowDefinition Height="Auto"/>
+      <RowDefinition Height="Auto"/>
       <RowDefinition Height="*"/>
       <RowDefinition Height="Auto"/>
     </Grid.RowDefinitions>
@@ -45,10 +46,12 @@
                 VerticalAlignment="Center" IsChecked="False" Margin="0,0,12,0"
                 ToolTip="Translation disabled until enabled. Select the Local provider to keep English text offline."/>
       <TextBlock VerticalAlignment="Center" Text="Translator:" Margin="0,0,5,0"/>
-      <ComboBox x:Name="TranslationProviderSelect" Width="165" SelectedIndex="0" Margin="0,0,10,0"
-                ToolTip="Local OPUS-MT never sends text to a cloud service. Groq sends English interim and final text over HTTPS.">
+      <ComboBox x:Name="TranslationProviderSelect" Width="172" SelectedIndex="0" Margin="0,0,10,0"
+                SelectionChanged="TranslationProvider_SelectionChanged"
+                ToolTip="ChatGPT plan and Groq require explicit cloud opt-in. Local is private.">
         <ComboBoxItem Content="Local OPUS-MT (offline)"/>
         <ComboBoxItem Content="Groq (cloud)"/>
+        <ComboBoxItem Content="ChatGPT plan (Sign in)"/>
       </ComboBox>
       <Button x:Name="TestGroqButton" Content="Test translator" Width="105" Margin="0,0,10,0"
               Click="TestGroq_Click" ToolTip="Translate a fixed example using the selected provider. No interview text is used."/>
@@ -56,7 +59,19 @@
                  Text="RU disabled. Local OPUS-MT is the default provider."
                  TextWrapping="Wrap"/>
     </StackPanel>
-    <Grid Grid.Row="4">
+    <StackPanel Grid.Row="4" Orientation="Horizontal" Margin="0,0,0,8">
+      <Button x:Name="ChatGptSignInButton" Content="Continue with ChatGPT" Width="165"
+              Margin="0,0,8,0" Click="ChatGptSignIn_Click" IsEnabled="False"
+              ToolTip="Authorize local LiveTranscriber in your browser to use eligible ChatGPT plan features."/>
+      <Button x:Name="ChatGptDisconnectButton" Content="Disconnect" Width="95"
+              Margin="0,0,8,0" Click="ChatGptDisconnect_Click" IsEnabled="False"/>
+      <TextBlock Text="ChatGPT model:" VerticalAlignment="Center" Margin="0,0,7,0"/>
+      <ComboBox x:Name="ChatGptModelSelect" Width="220" DisplayMemberPath="DisplayName"
+                Margin="0,0,8,0" IsEnabled="False"/>
+      <TextBlock x:Name="ChatGptAccountStatus" VerticalAlignment="Center"
+                 Foreground="#555555" Text="Not connected" TextWrapping="Wrap"/>
+    </StackPanel>
+    <Grid Grid.Row="5">
       <Grid.RowDefinitions>
         <RowDefinition Height="Auto"/>
         <RowDefinition Height="*"/>
@@ -76,7 +91,7 @@
                VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
                TextWrapping="Wrap" AcceptsReturn="True"/>
     </Grid>
-    <StackPanel Grid.Row="5" Margin="0,10,0,0">
+    <StackPanel Grid.Row="6" Margin="0,10,0,0">
       <TextBlock x:Name="StatusText" Text="Ready. No microphone is opened." Foreground="#555555"/>
       <TextBlock x:Name="ResourceText" Text="CPU/RAM measurements available after Start."
                  TextWrapping="Wrap" Foreground="#444444"/>
