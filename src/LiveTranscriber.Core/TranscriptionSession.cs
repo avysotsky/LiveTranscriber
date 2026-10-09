@@ -1,44 +1,33 @@
-using System.Threading.Channels;
 using System.Diagnostics;
+using System.Threading.Channels;
 
 namespace LiveTranscriber.Core;
 
-/// <summary>Bounded audio pipeline. Audio capture callbacks must never wait for inference.</summary>
+/// <summary>Bounded capture-to-ASR pipeline. Capture callbacks never wait for inference.</summary>
 public sealed class TranscriptionSession : IAsyncDisposable
 {
+    private const double SamplesPerSecond = 16_000d;
     private readonly IAudioSource _source;
     private readonly ISpeechEngine _engine;
+    private readonly object _queueGate = new();
     private readonly Channel<float[]> _queue = Channel.CreateBounded<float[]>(new BoundedChannelOptions(12)
     {
-        SingleReader = false, // Producer may also read to evict the oldest chunk.
+        // The producer can evict the oldest frame when the queue is full.
+        SingleReader = false,
         SingleWriter = false,
         FullMode = BoundedChannelFullMode.Wait
     });
     private Task? _consumer;
     private int _running;
     private int _started;
-    private long _dropped;
+    private long _droppedChunks;
+    private long _droppedSamples;
+    private long _queuedSamples;
+    private long _peakQueuedSamples;
     private long _processedSamples;
+    private long _processedChunks;
     private long _processorTicks;
 
-    public long DroppedChunks => Interlocked.Read(ref _dropped);
-
-    /// <summary>Seconds of audio processed by the recognizer.</summary>
-    public double ProcessedAudioSeconds => Interlocked.Read(ref _processedSamples) / 16000d;
-
-    /// <summary>
-    /// CPU-side recognizer processing time divided by audio duration.
-    /// For cloud this measures only upload/write time, NOT server-side ASR latency.
-    /// </summary>
-    public double ProcessingRatio
-    {
-        get
-        {
-            long frames = Interlocked.Read(ref _processedSamples);
-            if (frames == 0) return 0;
-            return Interlocked.Read(ref _processorTicks) / (double)Stopwatch.Frequency / (frames / 16000d);
-        }
-    }
     public event Action<TranscriptUpdate>? TextAvailable;
     public event Action<Exception>? Failed;
 
@@ -52,31 +41,54 @@ public sealed class TranscriptionSession : IAsyncDisposable
         _engine.Failed += OnFailed;
     }
 
+    public long DroppedChunks => Interlocked.Read(ref _droppedChunks);
+
+    public double ProcessedAudioSeconds => Interlocked.Read(ref _processedSamples) / SamplesPerSecond;
+
+    /// <summary>
+    /// Total client-side processing time / processed audio duration.
+    /// For cloud engines this measures client audio writes, NOT server-side speech latency.
+    /// </summary>
+    public double ProcessingRatio
+    {
+        get
+        {
+            long count = Interlocked.Read(ref _processedSamples);
+            return count == 0 ? 0 : Interlocked.Read(ref _processorTicks) /
+                (double)Stopwatch.Frequency / (count / SamplesPerSecond);
+        }
+    }
+
+    public PipelineMetrics GetMetrics()
+    {
+        long queued, peak, dropped;
+        lock (_queueGate)
+        {
+            queued = _queuedSamples;
+            peak = _peakQueuedSamples;
+            dropped = _droppedSamples;
+        }
+
+        return new PipelineMetrics(
+            DroppedChunks: Interlocked.Read(ref _droppedChunks),
+            DroppedAudioSeconds: dropped / SamplesPerSecond,
+            QueuedAudioSeconds: queued / SamplesPerSecond,
+            PeakQueuedAudioSeconds: peak / SamplesPerSecond,
+            ProcessedAudioSeconds: ProcessedAudioSeconds,
+            ProcessingRatio: ProcessingRatio,
+            ProcessedChunks: Interlocked.Read(ref _processedChunks));
+    }
+
     public async Task StartAsync(CancellationToken cancellationToken = default)
     {
         if (Interlocked.Exchange(ref _started, 1) != 0)
             throw new InvalidOperationException("A session can only be started once.");
+
         Volatile.Write(ref _running, 1);
         try
         {
             await _engine.StartAsync(cancellationToken).ConfigureAwait(false);
-            _consumer = Task.Run(async () =>
-            {
-                try
-                {
-                    await foreach (float[] samples in _queue.Reader.ReadAllAsync())
-                        {
-                        long begin = Stopwatch.GetTimestamp();
-                        try { await _engine.ProcessAsync(samples).ConfigureAwait(false); }
-                        finally
-                        {
-                            Interlocked.Add(ref _processorTicks, Stopwatch.GetTimestamp() - begin);
-                            Interlocked.Add(ref _processedSamples, samples.Length);
-                        }
-                    }
-                }
-                catch (Exception ex) { OnFailed(ex); }
-            });
+            _consumer = Task.Run(ConsumeAsync);
             _source.Start();
         }
         catch
@@ -86,13 +98,58 @@ public sealed class TranscriptionSession : IAsyncDisposable
         }
     }
 
+    private async Task ConsumeAsync()
+    {
+        try
+        {
+            while (await _queue.Reader.WaitToReadAsync().ConfigureAwait(false))
+            {
+                float[]? samples;
+                lock (_queueGate)
+                {
+                    if (!_queue.Reader.TryRead(out samples)) continue;
+                    _queuedSamples -= samples.Length;
+                }
+
+                long begin = Stopwatch.GetTimestamp();
+                try { await _engine.ProcessAsync(samples).ConfigureAwait(false); }
+                finally
+                {
+                    Interlocked.Add(ref _processorTicks, Stopwatch.GetTimestamp() - begin);
+                    Interlocked.Add(ref _processedSamples, samples.Length);
+                    Interlocked.Increment(ref _processedChunks);
+                }
+            }
+        }
+        catch (Exception ex) { OnFailed(ex); }
+    }
+
     private void OnSamples(float[] samples)
     {
-        if (Volatile.Read(ref _running) == 0 || samples.Length == 0) return;
-        if (_queue.Writer.TryWrite(samples)) return;
-        // Drop stale speech rather than allowing unbounded latency.
-        if (_queue.Reader.TryRead(out _)) Interlocked.Increment(ref _dropped);
-        if (!_queue.Writer.TryWrite(samples)) Interlocked.Increment(ref _dropped);
+        if (samples.Length == 0) return;
+        lock (_queueGate)
+        {
+            if (Volatile.Read(ref _running) == 0) return;
+
+            if (!_queue.Writer.TryWrite(samples))
+            {
+                // Prefer the freshest audio and count exactly how much speech was lost.
+                if (_queue.Reader.TryRead(out float[]? oldest))
+                {
+                    _queuedSamples -= oldest.Length;
+                    _droppedSamples += oldest.Length;
+                    Interlocked.Increment(ref _droppedChunks);
+                }
+                if (!_queue.Writer.TryWrite(samples))
+                {
+                    _droppedSamples += samples.Length;
+                    Interlocked.Increment(ref _droppedChunks);
+                    return;
+                }
+            }
+            _queuedSamples += samples.Length;
+            _peakQueuedSamples = Math.Max(_peakQueuedSamples, _queuedSamples);
+        }
     }
 
     private void OnText(TranscriptUpdate update) => TextAvailable?.Invoke(update);
@@ -103,7 +160,8 @@ public sealed class TranscriptionSession : IAsyncDisposable
         if (Interlocked.Exchange(ref _running, 0) == 0) return;
         try { _source.Stop(); }
         catch (Exception ex) { OnFailed(ex); }
-        _queue.Writer.TryComplete();
+
+        lock (_queueGate) _queue.Writer.TryComplete();
         if (_consumer is not null) await _consumer.ConfigureAwait(false);
         try { await _engine.StopAsync().ConfigureAwait(false); }
         catch (Exception ex) { OnFailed(ex); }
