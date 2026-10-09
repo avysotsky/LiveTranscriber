@@ -4,6 +4,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Threading;
 using LiveTranscriber.Core;
+using LiveTranscriber.Core.Translation;
 using LiveTranscriber.Desktop.Audio;
 using LiveTranscriber.Desktop.Engines;
 
@@ -12,7 +13,9 @@ namespace LiveTranscriber.Desktop;
 public partial class MainWindow : Window
 {
     private TranscriptionSession? _session;
+    private TranslationPipeline? _translations;
     private readonly StringBuilder _confirmed = new();
+    private readonly StringBuilder _russian = new();
     private SystemResourceSampler _resourceSampler = new();
     private PipelineHealthMonitor _healthMonitor = new();
     private DateTimeOffset _sessionStartedAt;
@@ -90,8 +93,37 @@ public partial class MainWindow : Window
         StartButton.IsEnabled = false;
         StatusText.Text = "Initializing recognition and capture...";
         TranscriptionSession? candidate = null;
+        TranslationPipeline? translationCandidate = null;
         try
         {
+            if (TranslateToggle.IsChecked == true)
+            {
+                // Consent is an explicit UI action. Only final text (never audio) goes to Groq.
+                var translator = new GroqRussianTranslator(
+                    Environment.GetEnvironmentVariable("GROQ_API_KEY") ?? "");
+                translationCandidate = new TranslationPipeline(translator);
+                TranslationPipeline active = translationCandidate;
+                active.Translated += (russianText, generation) =>
+                    _ = Dispatcher.BeginInvoke(() =>
+                    {
+                        if (!ReferenceEquals(_translations, active) ||
+                            generation != active.Generation) return;
+                        _russian.AppendLine(russianText.Trim());
+                        RussianBox.Text = _russian.ToString();
+                        RussianBox.ScrollToEnd();
+                        TranslationStatus.Text = $"RU translated · {active.PendingPhrases} pending";
+                    });
+                active.Error += message =>
+                    _ = Dispatcher.BeginInvoke(() =>
+                    {
+                        if (ReferenceEquals(_translations, active))
+                            TranslationStatus.Text = "RU: " + message;
+                    });
+                _translations = active;
+                TranslationStatus.Text = "RU: enabled (finalized English text sent to Groq)";
+            }
+            else TranslationStatus.Text = "Russian translation disabled";
+
             CaptureSourceSelection selection = GetSelection();
             IAudioSource audio = selection.Mode == CaptureSourceMode.DeviceLoopback
                 ? new WasapiSpeakerSource()
@@ -124,6 +156,8 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             if (candidate is not null) await candidate.DisposeAsync();
+            if (translationCandidate is not null) await translationCandidate.DisposeAsync();
+            _translations = null;
             MessageBox.Show(this, ex.Message, "Cannot start transcription", MessageBoxButton.OK, MessageBoxImage.Warning);
             StartButton.IsEnabled = true;
             SetCaptureControls(true);
@@ -135,6 +169,7 @@ public partial class MainWindow : Window
     private void SetCaptureControls(bool enabled)
     {
         EngineSelect.IsEnabled = enabled;
+        TranslateToggle.IsEnabled = enabled;
         CaptureSelect.IsEnabled = enabled;
         bool app = enabled && CaptureSelect.SelectedIndex == 1;
         ProcessSelect.IsEnabled = app;
@@ -151,10 +186,25 @@ public partial class MainWindow : Window
         StopButton.IsEnabled = false;
         StatusText.Text = "Stopping...";
         var session = _session;
-        try { await session.DisposeAsync(); }
+        var translations = _translations;
+        try
+        {
+            await session.DisposeAsync();
+            if (translations is not null)
+            {
+                TranslationStatus.Text = "RU: completing remaining translations...";
+                await translations.CompleteAsync(TimeSpan.FromSeconds(10));
+            }
+        }
         catch (Exception ex) { MessageBox.Show(this, ex.Message, "Stop error"); }
         finally
         {
+            if (translations is not null)
+            {
+                await translations.DisposeAsync();
+                _translations = null;
+                TranslationStatus.Text = "RU: translation stopped";
+            }
             _previousDiagnosticReport = BuildDiagnostics(session.GetMetrics());
             ResourceText.Text = _previousDiagnosticReport.Replace(Environment.NewLine, "  |  ");
             _session = null;
@@ -242,6 +292,9 @@ public partial class MainWindow : Window
 
     private void UpdateText(TranscriptUpdate update)
     {
+        if (update.IsFinal && !string.IsNullOrWhiteSpace(update.Text))
+            _translations?.TryEnqueueFinal(update.Text);
+
         _ = Dispatcher.BeginInvoke(() =>
         {
             if (update.IsFinal)
@@ -269,19 +322,33 @@ public partial class MainWindow : Window
 
     private void Copy_Click(object sender, RoutedEventArgs e)
     {
-        if (TranscriptBox.Text.Length > 0) Clipboard.SetText(TranscriptBox.Text);
+        if (TranscriptBox.Text.Length > 0 || RussianBox.Text.Length > 0)
+            Clipboard.SetText("English:\n" + TranscriptBox.Text +
+                "\n\nРусский перевод:\n" + RussianBox.Text);
     }
 
     private void Clear_Click(object sender, RoutedEventArgs e)
     {
+        _translations?.ClearPending();
         _confirmed.Clear();
+        _russian.Clear();
         _hypothesis = string.Empty;
+        RussianBox.Clear();
+        TranslationStatus.Text = _translations is null
+            ? "Russian translation disabled"
+            : "RU: cleared; translating new final phrases";
         RenderTranscript();
     }
 
     protected override async void OnClosed(EventArgs e)
     {
         _resourceTimer.Stop();
+        if (_translations is not null)
+        {
+            try { await _translations.DisposeAsync(); }
+            catch { /* Closing: never log submitted text or API keys. */ }
+            _translations = null;
+        }
         if (_session is not null)
         {
             try { await _session.DisposeAsync(); }
