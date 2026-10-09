@@ -105,7 +105,7 @@ public partial class MainWindow : Window
     private void ChatGptDisconnect_Click(object sender, RoutedEventArgs e)
     {
         if (_session is not null || _busy) return;
-        _chatGptConnection.Disconnect();
+        _chatGptConnection.ForgetRegistration();
         ChatGptModelSelect.ItemsSource = null;
         ChatGptAccountStatus.Text = "Disconnected (tokens discarded from memory)";
         SetCaptureControls(true);
