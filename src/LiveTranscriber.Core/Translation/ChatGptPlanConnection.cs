@@ -30,6 +30,7 @@ public sealed class ChatGptPlanConnection : IAsyncDisposable
     private string? _subject;
     private DateTimeOffset _expiresAt;
     private bool _disposed;
+    private sealed record LocalRegistration(string ClientId, string Subject);
 
     public bool IsConnected => _accessToken is not null && _clientId is not null;
     public string Status => IsConnected ? "ChatGPT plan authorized (session only)" : "Not connected";
@@ -63,12 +64,12 @@ public sealed class ChatGptPlanConnection : IAsyncDisposable
         Base64Url(SHA256.HashData(Encoding.ASCII.GetBytes(verifier)));
 
     internal static string BuildAuthorizeUrl(
-        Uri callback, string hostId, string state, string nonce, string pkceChallenge)
+        Uri callback, string hostId, string state, string nonce, string pkceChallenge,
+        string? existingClientId = null)
     {
         var options = new Dictionary<string, string>
         {
-            ["client_id"] = "dynamic_agent_client",
-            ["agent_name_hint"] = "LiveTranscriber",
+            ["client_id"] = existingClientId ?? "dynamic_agent_client",
             ["ext_agent_host_id"] = hostId,
             ["response_type"] = "code",
             ["redirect_uri"] = callback.ToString(),
@@ -79,6 +80,7 @@ public sealed class ChatGptPlanConnection : IAsyncDisposable
             ["code_challenge_method"] = "S256",
             ["code_challenge"] = pkceChallenge
         };
+        if (existingClientId is null) options["agent_name_hint"] = "LiveTranscriber";
         return AuthorizationUri + "?" + string.Join("&", options.Select(
             x => Uri.EscapeDataString(x.Key) + "=" + Uri.EscapeDataString(x.Value)));
     }
@@ -89,12 +91,13 @@ public sealed class ChatGptPlanConnection : IAsyncDisposable
         ObjectDisposedException.ThrowIf(_disposed, this);
         // Only public host ID persisted locally, NEVER session or refresh tokens.
         string hostId = GetOrCreateHostId();
+        LocalRegistration? saved = LoadRegistration();
         string verifier = RandomUrlSafe(32);
         string state = RandomUrlSafe();
         string nonce = RandomUrlSafe();
         using var listener = CreateLoopbackListener(out Uri callback);
         string authorizationUrl = BuildAuthorizeUrl(callback, hostId, state, nonce,
-            PkceChallenge(verifier));
+            PkceChallenge(verifier), saved?.ClientId);
         await _openBrowser(new Uri(authorizationUrl)).ConfigureAwait(false);
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -106,8 +109,10 @@ public sealed class ChatGptPlanConnection : IAsyncDisposable
         bool stateMatches = CryptographicOperations.FixedTimeEquals(
             Encoding.ASCII.GetBytes(state), Encoding.ASCII.GetBytes(returnedState));
         string? code = context.Request.QueryString["code"];
-        string? issuedClientId = context.Request.QueryString["client_id"];
-        bool accepted = validPath && stateMatches &&
+        string? callbackClientId = context.Request.QueryString["client_id"];
+        string? issuedClientId = saved is null ? callbackClientId : saved.ClientId;
+        bool accepted = (saved is null || callbackClientId is null ||
+            callbackClientId == saved.ClientId) && validPath && stateMatches &&
             context.Request.QueryString["error"] is null &&
             !string.IsNullOrWhiteSpace(code) &&
             issuedClientId?.StartsWith("oaiapp_", StringComparison.Ordinal) == true;
@@ -143,6 +148,8 @@ public sealed class ChatGptPlanConnection : IAsyncDisposable
         string idToken = token.GetProperty("id_token").GetString() ?? "";
         string subject = await VerifyIdTokenAsync(idToken, issuedClientId!, nonce,
             cancellationToken).ConfigureAwait(false);
+        if (saved is not null && subject != saved.Subject)
+            throw new InvalidOperationException("Different ChatGPT account; disconnect first.");
         string scopes = token.GetProperty("scope").GetString() ?? "";
         if (!HasPlanPermission(scopes))
             throw new InvalidOperationException(
@@ -158,16 +165,56 @@ public sealed class ChatGptPlanConnection : IAsyncDisposable
         _subject = subject;
         _expiresAt = DateTimeOffset.UtcNow.AddSeconds(
             token.TryGetProperty("expires_in", out var expires) ? expires.GetInt32() : 3600);
+        if (saved is null) SaveRegistration(new LocalRegistration(issuedClientId!, subject));
     }
 
     internal static bool HasPlanPermission(string scope) =>
         scope.Split(' ', StringSplitOptions.RemoveEmptyEntries).Contains("resource.invoke") &&
         scope.Split(' ', StringSplitOptions.RemoveEmptyEntries).Contains("chatgpt.tokens.use.direct");
 
+    private static string LocalConfigFolder() => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "LiveTranscriber");
+
+    private static string RegistrationPath => Path.Combine(LocalConfigFolder(), "chatgpt-client.json");
+
+    private static LocalRegistration? LoadRegistration()
+    {
+        try
+        {
+            if (!File.Exists(RegistrationPath)) return null;
+            var registration = JsonSerializer.Deserialize<LocalRegistration>(
+                File.ReadAllText(RegistrationPath));
+            return registration?.ClientId.StartsWith("oaiapp_", StringComparison.Ordinal) == true
+                && !string.IsNullOrWhiteSpace(registration.Subject) ? registration : null;
+        }
+        catch (Exception ex) when (ex is IOException or JsonException or UnauthorizedAccessException)
+        {
+            return null;
+        }
+    }
+
+    private static void SaveRegistration(LocalRegistration registration)
+    {
+        Directory.CreateDirectory(LocalConfigFolder());
+        string temp = RegistrationPath + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        try
+        {
+            File.WriteAllText(temp, JsonSerializer.Serialize(registration), new UTF8Encoding(false));
+            File.Move(temp, RegistrationPath, overwrite: true);
+        }
+        finally { if (File.Exists(temp)) File.Delete(temp); }
+    }
+
+    public void ForgetRegistration()
+    {
+        Disconnect();
+        if (File.Exists(RegistrationPath)) File.Delete(RegistrationPath);
+    }
+
     private static string GetOrCreateHostId()
     {
-        string folder = Path.Combine(Environment.GetFolderPath(
-            Environment.SpecialFolder.LocalApplicationData), "LiveTranscriber");
+        string folder = LocalConfigFolder();
         Directory.CreateDirectory(folder);
         string file = Path.Combine(folder, "chatgpt-agent-host-id.txt");
         if (File.Exists(file))
