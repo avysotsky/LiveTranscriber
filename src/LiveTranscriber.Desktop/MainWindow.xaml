@@ -1,10 +1,11 @@
 <Window x:Class="LiveTranscriber.Desktop.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="LiveTranscriber — speaker audio" Height="570" Width="850"
-        MinHeight="380" MinWidth="560">
+        Title="LiveTranscriber — English speaker audio" Height="600" Width="850"
+        MinHeight="410" MinWidth="740">
   <Grid Margin="18">
     <Grid.RowDefinitions>
+      <RowDefinition Height="Auto"/>
       <RowDefinition Height="Auto"/>
       <RowDefinition Height="Auto"/>
       <RowDefinition Height="*"/>
@@ -12,10 +13,10 @@
     </Grid.RowDefinitions>
     <DockPanel Grid.Row="0" Margin="0,0,0,14">
       <TextBlock DockPanel.Dock="Left" FontSize="22" FontWeight="SemiBold" Text="LiveTranscriber"/>
-      <TextBlock HorizontalAlignment="Right" VerticalAlignment="Center"
-                 Foreground="#4A7B61" Text="Playback only · English"/>
+      <TextBlock HorizontalAlignment="Right" VerticalAlignment="Center" Foreground="#4A7B61"
+                 Text="Playback only · English"/>
     </DockPanel>
-    <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,0,0,12">
+    <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,0,0,10">
       <TextBlock VerticalAlignment="Center" Text="Engine:" Margin="0,0,8,0"/>
       <ComboBox x:Name="EngineSelect" Width="180" SelectedIndex="0" Margin="0,0,12,0">
         <ComboBoxItem Content="Local (offline)"/>
@@ -26,15 +27,27 @@
       <Button Width="80" Content="Copy" Click="Copy_Click" Margin="0,0,8,0"/>
       <Button Width="80" Content="Clear" Click="Clear_Click"/>
     </StackPanel>
-    <TextBox x:Name="TranscriptBox" Grid.Row="2" FontSize="19"
-             FontFamily="Segoe UI" Padding="12" Background="#FFF9FAFB"
-             BorderBrush="#FFCCD2DB" IsReadOnly="True"
+    <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="0,0,0,12">
+      <TextBlock VerticalAlignment="Center" Text="Capture:" Margin="0,0,8,0"/>
+      <ComboBox x:Name="CaptureSelect" Width="175" SelectedIndex="0" Margin="0,0,10,0"
+                SelectionChanged="CaptureSelect_SelectionChanged">
+        <ComboBoxItem Content="All speaker output"/>
+        <ComboBoxItem Content="Selected application"/>
+      </ComboBox>
+      <ComboBox x:Name="ProcessSelect" Width="340" IsEditable="True" IsEnabled="False"
+                DisplayMemberPath="Description" Margin="0,0,8,0"
+                ToolTip="Select a window or type a numeric process ID"/>
+      <Button x:Name="RefreshButton" Width="80" Content="Refresh" Click="Refresh_Click" IsEnabled="False"/>
+    </StackPanel>
+    <TextBox x:Name="TranscriptBox" Grid.Row="3" FontSize="19" FontFamily="Segoe UI"
+             Padding="12" Background="#FFF9FAFB" BorderBrush="#FFCCD2DB" IsReadOnly="True"
              VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
              TextWrapping="Wrap" AcceptsReturn="True"/>
-    <StackPanel Grid.Row="3" Margin="0,12,0,0">
+    <StackPanel Grid.Row="4" Margin="0,10,0,0">
       <TextBlock x:Name="StatusText" Text="Ready. No microphone is opened." Foreground="#555555"/>
+      <TextBlock x:Name="ResourceText" Text="CPU/RAM measurements available after Start." Foreground="#444444"/>
       <TextBlock Foreground="#777777" FontSize="12"
-                 Text="MVP captures everything playing through the Windows default output device."/>
+                 Text="App mode captures the chosen PID and descendants. Choose the conferencing app's main window."/>
     </StackPanel>
   </Grid>
 </Window>
