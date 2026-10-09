@@ -14,6 +14,11 @@ public partial class MainWindow : Window
 {
     private TranscriptionSession? _session;
     private TranslationPipeline? _translations;
+    // Cached model belongs to the WPF window, NOT each recording. Model creation
+    // is deferred to a separate translation worker and never delays Start/ASR.
+    private readonly ReusableTranslatorHost _offlineTranslator = new(
+        async token => await LocalOpusMtTranslator.StartAsync(cancellationToken: token)
+            .ConfigureAwait(false));
     private readonly StringBuilder _confirmed = new();
     private readonly StringBuilder _russian = new();
     private string _previewRussian = string.Empty;
@@ -117,7 +122,7 @@ public partial class MainWindow : Window
                 // Local worker never sends HTTP requests or downloads a model.
                 ITextTranslator translator = _translationUsesCloud
                     ? new GroqRussianTranslator(Environment.GetEnvironmentVariable("GROQ_API_KEY") ?? "")
-                    : await LocalOpusMtTranslator.StartAsync();
+                    : _offlineTranslator.CreateSessionTranslator();
                 translationCandidate = new TranslationPipeline(translator,
                     _translationUsesCloud ? TimeSpan.FromMilliseconds(2200) : TimeSpan.Zero);
                 TranslationPipeline active = translationCandidate;
@@ -173,7 +178,9 @@ public partial class MainWindow : Window
             StatusText.Text = selection.Mode == CaptureSourceMode.DeviceLoopback
                 ? "Listening to all default speaker playback. No microphone opened."
                 : $"Listening to application PID {selection.ProcessId} and its child processes. No microphone opened.";
-            _resourceSampler = new SystemResourceSampler();
+            _resourceSampler = new SystemResourceSampler(
+                _translationWasEnabled && !_translationUsesCloud
+                    ? () => _offlineTranslator.LocalProcessId : null);
             _resourceSampler.Sample();
             _healthMonitor = new PipelineHealthMonitor();
             _sessionStartedAt = DateTimeOffset.UtcNow;
@@ -300,6 +307,7 @@ public partial class MainWindow : Window
         return string.Join(Environment.NewLine, new[]
         {
             "LiveTranscriber session diagnostics (no transcript or audio)",
+            "Process resource figures include the offline Python translation worker when ready.",
             $"Duration: {elapsed:hh\\:mm\\:ss}",
             $"Engine: {(EngineSelect.SelectedIndex == 0 ? "Local" : "Cloud")}",
             $"Capture: {(CaptureSelect.SelectedIndex == 0 ? "All output" : "Selected application")}",
@@ -337,6 +345,26 @@ public partial class MainWindow : Window
         // At most one changed interim hypothesis every four seconds; do not
         // turn each Sherpa token into an API request.
         string english = _hypothesis.Trim();
+        if (!_translationUsesCloud)
+        {
+            // Audio recognition is strictly more important than interim RU.
+            // Skip previews whenever ASR audio is backing up or the translator
+            // already has an active/pending job. Final text is never dropped here.
+            TranslationMetrics translation = pipeline.GetMetrics();
+            if (_session.GetMetrics().QueuedChunks >= 2 ||
+                translation.PendingPhrases > 0 ||
+                translation.ApiRequestsStarted >
+                    translation.ApiRequestsSucceeded + translation.ApiRequestsFailed)
+                return;
+
+            // Preview is replaceable: cap repeated translations of an endlessly
+            // growing interim hypothesis to a recent speech window.
+            if (english.Length > 280)
+            {
+                int split = english.IndexOf(' ', english.Length - 280);
+                english = split >= 0 ? english[(split + 1)..] : english[^280..];
+            }
+        }
         if (english.Length < 12 || english == _lastPreviewEnglish ||
             DateTimeOffset.UtcNow - _lastPreviewSubmitted < TimeSpan.FromSeconds(4))
             return;
@@ -383,16 +411,28 @@ public partial class MainWindow : Window
 
         bool cloud = TranslationProviderSelect.SelectedIndex == 1;
         TestGroqButton.IsEnabled = false;
+        StartButton.IsEnabled = false;
+        TranslationProviderSelect.IsEnabled = false;
         TranslationStatus.Text = cloud
             ? "RU TEST: contacting Groq with a fixed example sentence..."
             : "RU TEST: starting the offline OPUS-MT worker...";
         try
         {
-            await using ITextTranslator translator = cloud
+            ITextTranslator translator = cloud
                 ? new GroqRussianTranslator(Environment.GetEnvironmentVariable("GROQ_API_KEY") ?? "")
-                : await LocalOpusMtTranslator.StartAsync();
-            string result = await translator.TranslateToRussianAsync(
-                "Can you explain dependency injection in ASP.NET Core?", CancellationToken.None);
+                : await _offlineTranslator.PrepareAsync();
+            string result;
+            try
+            {
+                result = await translator.TranslateToRussianAsync(
+                    "Can you explain dependency injection in ASP.NET Core?", CancellationToken.None);
+            }
+            finally
+            {
+                // Cloud clients are ephemeral; the local model stays warm between
+                // Test translator, Start and Stop until this window is closed.
+                if (cloud) await translator.DisposeAsync();
+            }
             TranslationStatus.Text = cloud
                 ? "RU TEST: Groq connection OK."
                 : "RU TEST: local translation OK; no network used.";
@@ -405,7 +445,12 @@ public partial class MainWindow : Window
                 ? ex.Message : "Translator failed. Check the local model or network configuration.";
             TranslationStatus.Text = "RU TEST FAILED: " + safeMessage;
         }
-        finally { TestGroqButton.IsEnabled = _session is null; }
+        finally
+        {
+            TestGroqButton.IsEnabled = _session is null && !_busy;
+            StartButton.IsEnabled = _session is null && !_busy;
+            TranslationProviderSelect.IsEnabled = _session is null && !_busy;
+        }
     }
 
     private void UpdateText(TranscriptUpdate update)
@@ -479,6 +524,8 @@ public partial class MainWindow : Window
             catch { /* Shutdown must not log or persist sensitive audio. */ }
             _session = null;
         }
+        try { await _offlineTranslator.DisposeAsync(); }
+        catch { /* Stop the locally loaded model when the window closes. */ }
         base.OnClosed(e);
     }
 }

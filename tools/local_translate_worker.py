@@ -37,7 +37,7 @@ def main():
             device="cpu",
             compute_type="int8",
             inter_threads=1,
-            intra_threads=2,
+            intra_threads=1,  # Conserve a physical core for live English ASR.
         )
     except Exception:
         emit({"type": "error", "error": "Could not load local translation model. See setup instructions."})
@@ -63,9 +63,9 @@ def main():
             for paragraph in text.split("\n"):
                 if not paragraph.strip():
                     continue
-                source_ids = tokenizer.encode(paragraph.strip(), truncation=True, max_length=480)
+                source_ids = tokenizer.encode(paragraph.strip(), truncation=True, max_length=192)
                 source_tokens = tokenizer.convert_ids_to_tokens(source_ids)
-                output = translator.translate_batch([source_tokens], beam_size=2, max_decoding_length=256)
+                output = translator.translate_batch([source_tokens], beam_size=1, max_decoding_length=128)
                 target_tokens = output[0].hypotheses[0]
                 target_text = tokenizer.decode(
                     tokenizer.convert_tokens_to_ids(target_tokens), skip_special_tokens=True)
