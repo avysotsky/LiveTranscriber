@@ -23,6 +23,10 @@ public sealed class AudioPipelineTelemetryTests
         Assert.InRange(measured.DroppedAudioSeconds, 0.799, 0.801);
         Assert.InRange(measured.QueuedAudioSeconds, 1.199, 1.201);
         Assert.InRange(measured.PeakQueuedAudioSeconds, 1.199, 1.201);
+        Assert.Equal(12, measured.QueuedChunks);
+        Assert.Equal(12, measured.PeakQueuedChunks);
+        Assert.Equal(12, measured.QueueCapacityChunks);
+        Assert.Equal(1, measured.NearCapacityEvents);
 
         recognizer.ReleaseFirst.TrySetResult();
         await sut.StopAsync();
@@ -30,6 +34,49 @@ public sealed class AudioPipelineTelemetryTests
         Assert.Equal(0, after.QueuedAudioSeconds);
         Assert.Equal(13, after.ProcessedChunks);
         Assert.InRange(after.ProcessedAudioSeconds, 1.299, 1.301);
+    }
+
+    [Fact]
+    public async Task DetectsNearCapacityBeforeAnyAudioIsDropped()
+    {
+        var source = new SyntheticSource();
+        var recognizer = new BlockFirstSpeechEngine();
+        await using var sut = new TranscriptionSession(source, recognizer);
+        await sut.StartAsync();
+        source.Send(new float[160]); // 10ms frame already being processed.
+        await recognizer.FirstEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        for (int i = 0; i < 9; i++)
+            source.Send(new float[160]);
+
+        PipelineMetrics active = sut.GetMetrics();
+        Assert.Equal(9, active.QueuedChunks);
+        Assert.Equal(12, active.QueueCapacityChunks);
+        Assert.Equal(1, active.NearCapacityEvents);
+        Assert.Equal(0, active.DroppedChunks);
+        Assert.InRange(active.QueuedAudioSeconds, 0.0899, 0.0901);
+
+        recognizer.ReleaseFirst.TrySetResult();
+        await sut.StopAsync();
+        Assert.Equal(0, sut.GetMetrics().QueuedChunks);
+    }
+
+    [Fact]
+    public async Task QueueBelowHighWatermarkDoesNotReportPressure()
+    {
+        var source = new SyntheticSource();
+        var recognizer = new BlockFirstSpeechEngine();
+        await using var sut = new TranscriptionSession(source, recognizer);
+        await sut.StartAsync();
+        source.Send(new float[160]);
+        await recognizer.FirstEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        for (int i = 0; i < 8; i++)
+            source.Send(new float[160]);
+
+        Assert.Equal(8, sut.GetMetrics().QueuedChunks);
+        Assert.Equal(0, sut.GetMetrics().NearCapacityEvents);
+        recognizer.ReleaseFirst.TrySetResult();
+        await sut.StopAsync();
     }
 
     [Fact]
