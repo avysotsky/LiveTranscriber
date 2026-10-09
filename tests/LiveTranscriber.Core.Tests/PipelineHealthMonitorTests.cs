@@ -7,8 +7,8 @@ public sealed class PipelineHealthMonitorTests
 {
     private static PipelineHealthReading Reading(
         double cpu = 12, double queue = 0, double rtf = 0.3, double loss = 0,
-        bool cloud = false, double processed = 10) =>
-        new(cpu, queue, rtf, loss, cloud, processed);
+        bool cloud = false, double processed = 10, int chunks = 0, long nearEvents = 0) =>
+        new(cpu, queue, rtf, loss, cloud, processed, chunks, 12, nearEvents);
 
     [Fact]
     public void HealthyStateRequiresThreeCleanSamples()
@@ -48,12 +48,32 @@ public sealed class PipelineHealthMonitorTests
     }
 
     [Fact]
-    public void QueueBacklogCanTriggerPressure()
+    public void ThreeSamplesAtNineOfTwelveQueueSlotsTriggerPressure()
     {
         var sut = new PipelineHealthMonitor();
-        sut.Observe(Reading(queue: 0.7));
-        sut.Observe(Reading(queue: 0.7));
-        Assert.Equal(PipelineHealth.UnderPressure, sut.Observe(Reading(queue: 0.7)));
+        sut.Observe(Reading(queue: 0.09, chunks: 9));
+        sut.Observe(Reading(queue: 0.09, chunks: 9));
+        Assert.Equal(PipelineHealth.UnderPressure, sut.Observe(Reading(queue: 0.09, chunks: 9)));
+    }
+
+    [Fact]
+    public void CrossingHighWatermarkAlertsEvenAfterQueueIsDrained()
+    {
+        var sut = new PipelineHealthMonitor();
+        Assert.Equal(PipelineHealth.UnderPressure,
+            sut.Observe(Reading(queue: 0, chunks: 0, nearEvents: 1)));
+        Assert.Equal(PipelineHealth.UnderPressure, sut.Observe(Reading()));
+        sut.Observe(Reading());
+        Assert.Equal(PipelineHealth.Healthy, sut.Observe(Reading()));
+    }
+
+    [Fact]
+    public void UnderThresholdQueueDoesNotCreateFalsePressure()
+    {
+        var sut = new PipelineHealthMonitor();
+        for (int i = 0; i < 3; ++i)
+            sut.Observe(Reading(queue: 0.08, chunks: 8));
+        Assert.Equal(PipelineHealth.Healthy, sut.State);
     }
 
     [Fact]
