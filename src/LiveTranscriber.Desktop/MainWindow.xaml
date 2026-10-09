@@ -44,8 +44,11 @@
       <CheckBox x:Name="TranslateToggle" Content="Auto-translate EN → RU (Groq cloud)"
                 VerticalAlignment="Center" IsChecked="False" Margin="0,0,16,0"
                 ToolTip="Only finalized English sentences are sent to Groq; transcription stays local when Local is selected."/>
+      <Button x:Name="TestGroqButton" Content="Test Groq" Width="94" Margin="0,0,12,0"
+              Click="TestGroq_Click" ToolTip="Send a fixed harmless English example to verify your Groq key and network connection. No interview text is sent."/>
       <TextBlock x:Name="TranslationStatus" VerticalAlignment="Center" Foreground="#555555"
-                 Text="Russian translation disabled"/>
+                 Text="RU disabled. Check the box to enable cloud translation."
+                 TextWrapping="Wrap"/>
     </StackPanel>
     <Grid Grid.Row="4">
       <Grid.RowDefinitions>
