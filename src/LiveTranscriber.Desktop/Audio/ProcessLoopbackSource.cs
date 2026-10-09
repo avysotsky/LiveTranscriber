@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.IO;
+using System.Runtime.Versioning;
 using LiveTranscriber.Core;
 using LiveTranscriber.Core.Audio;
 using NAudio.CoreAudioApi;
@@ -48,10 +49,7 @@ public sealed class ProcessLoopbackSource : IAudioSource
 
         cancellationToken.ThrowIfCancellationRequested();
         // NAudio activates WASAPI asynchronously. Do not block the WPF UI thread.
-        var recorder = await Task.Run(async () => await new WasapiRecorderBuilder()
-            .WithProcessLoopback((uint)processId, ProcessLoopbackMode.IncludeTargetProcessTree)
-            .WithFormat(WaveFormat.CreateIeeeFloatWaveFormat(48000, 2))
-            .BuildAsync().ConfigureAwait(false), cancellationToken).ConfigureAwait(false);
+        var recorder = await BuildRecorderOnWorkerAsync(processId, cancellationToken).ConfigureAwait(false);
         try
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -63,6 +61,13 @@ public sealed class ProcessLoopbackSource : IAudioSource
             throw;
         }
     }
+
+    [SupportedOSPlatform("windows10.0.19041.0")]
+    private static Task<WasapiRecorder> BuildRecorderOnWorkerAsync(int processId, CancellationToken cancellationToken) =>
+        Task.Run(async () => await new WasapiRecorderBuilder()
+            .WithProcessLoopback((uint)processId, ProcessLoopbackMode.IncludeTargetProcessTree)
+            .WithFormat(WaveFormat.CreateIeeeFloatWaveFormat(48000, 2))
+            .BuildAsync().ConfigureAwait(false), cancellationToken);
 
     public void Start()
     {
