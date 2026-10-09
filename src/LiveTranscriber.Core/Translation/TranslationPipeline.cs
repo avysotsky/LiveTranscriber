@@ -62,7 +62,7 @@ public sealed class TranslationPipeline : IAsyncDisposable
     {
         try
         {
-            while (await _queue.Reader.WaitToReadAsync(_shutdown.Token).ConfigureAwait(false))
+            while (_carried is not null || await _queue.Reader.WaitToReadAsync(_shutdown.Token).ConfigureAwait(false))
             {
                 Phrase first;
                 if (_carried is { } carried)
