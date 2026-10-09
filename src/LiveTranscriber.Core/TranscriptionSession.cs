@@ -12,7 +12,8 @@ public sealed class TranscriptionSession : IAsyncDisposable
     private readonly IAudioSource _source;
     private readonly ISpeechEngine _engine;
     private readonly object _queueGate = new();
-    private readonly Channel<float[]> _queue = Channel.CreateBounded<float[]>(new BoundedChannelOptions(QueueCapacity)
+    private readonly record struct CapturedFrame(float[] Samples, long CapturedAtTicks);
+    private readonly Channel<CapturedFrame> _queue = Channel.CreateBounded<CapturedFrame>(new BoundedChannelOptions(QueueCapacity)
     {
         // The producer can evict the oldest frame when the queue is full.
         SingleReader = false,
@@ -29,6 +30,9 @@ public sealed class TranscriptionSession : IAsyncDisposable
     private long _processedSamples;
     private long _processedChunks;
     private long _processorTicks;
+    private long _queueWaitTicks;
+    private long _peakQueueWaitTicks;
+    private long _peakProcessorCallTicks;
     private int _queuedChunks;
     private int _peakQueuedChunks;
     private long _nearCapacityEvents;
@@ -90,7 +94,11 @@ public sealed class TranscriptionSession : IAsyncDisposable
             QueuedChunks: chunks,
             PeakQueuedChunks: peakChunks,
             QueueCapacityChunks: QueueCapacity,
-            NearCapacityEvents: pressureEvents);
+            NearCapacityEvents: pressureEvents,
+            AverageQueueWaitMilliseconds: Math.Max(0, Interlocked.Read(ref _queueWaitTicks) * 1000d /
+                Stopwatch.Frequency / Math.Max(1, Interlocked.Read(ref _processedChunks))),
+            PeakQueueWaitMilliseconds: Interlocked.Read(ref _peakQueueWaitTicks) * 1000d / Stopwatch.Frequency,
+            PeakRecognizerCallMilliseconds: Interlocked.Read(ref _peakProcessorCallTicks) * 1000d / Stopwatch.Frequency);
     }
 
     public async Task StartAsync(CancellationToken cancellationToken = default)
@@ -118,21 +126,26 @@ public sealed class TranscriptionSession : IAsyncDisposable
         {
             while (await _queue.Reader.WaitToReadAsync().ConfigureAwait(false))
             {
-                float[]? samples;
+                CapturedFrame frame;
                 lock (_queueGate)
                 {
-                    if (!_queue.Reader.TryRead(out samples)) continue;
-                    _queuedSamples -= samples.Length;
+                    if (!_queue.Reader.TryRead(out frame)) continue;
+                    _queuedSamples -= frame.Samples.Length;
                     _queuedChunks--;
                     if (_queuedChunks < QueueHighWatermark) _queueWasNearCapacity = false;
                 }
 
                 long begin = Stopwatch.GetTimestamp();
-                try { await _engine.ProcessAsync(samples).ConfigureAwait(false); }
+                long queueWait = Math.Max(0, begin - frame.CapturedAtTicks);
+                try { await _engine.ProcessAsync(frame.Samples).ConfigureAwait(false); }
                 finally
                 {
-                    Interlocked.Add(ref _processorTicks, Stopwatch.GetTimestamp() - begin);
-                    Interlocked.Add(ref _processedSamples, samples.Length);
+                    long processorTicks = Math.Max(0, Stopwatch.GetTimestamp() - begin);
+                    Interlocked.Add(ref _processorTicks, processorTicks);
+                    Interlocked.Add(ref _queueWaitTicks, queueWait);
+                    UpdatePeak(ref _peakQueueWaitTicks, queueWait);
+                    UpdatePeak(ref _peakProcessorCallTicks, processorTicks);
+                    Interlocked.Add(ref _processedSamples, frame.Samples.Length);
                     Interlocked.Increment(ref _processedChunks);
                 }
             }
@@ -143,22 +156,23 @@ public sealed class TranscriptionSession : IAsyncDisposable
     private void OnSamples(float[] samples)
     {
         if (samples.Length == 0) return;
+        var frame = new CapturedFrame(samples, Stopwatch.GetTimestamp());
         lock (_queueGate)
         {
             if (Volatile.Read(ref _running) == 0) return;
 
-            if (!_queue.Writer.TryWrite(samples))
+            if (!_queue.Writer.TryWrite(frame))
             {
                 // Prefer the freshest audio and count exactly how much speech was lost.
-                if (_queue.Reader.TryRead(out float[]? oldest))
+                if (_queue.Reader.TryRead(out CapturedFrame oldest))
                 {
-                    _queuedSamples -= oldest.Length;
+                    _queuedSamples -= oldest.Samples.Length;
                     _queuedChunks--;
                     if (_queuedChunks < QueueHighWatermark) _queueWasNearCapacity = false;
-                    _droppedSamples += oldest.Length;
+                    _droppedSamples += oldest.Samples.Length;
                     Interlocked.Increment(ref _droppedChunks);
                 }
-                if (!_queue.Writer.TryWrite(samples))
+                if (!_queue.Writer.TryWrite(frame))
                 {
                     _droppedSamples += samples.Length;
                     Interlocked.Increment(ref _droppedChunks);
@@ -175,6 +189,13 @@ public sealed class TranscriptionSession : IAsyncDisposable
                 _queueWasNearCapacity = true;
             }
         }
+    }
+
+    private static void UpdatePeak(ref long target, long value)
+    {
+        long current;
+        while ((current = Interlocked.Read(ref target)) < value &&
+               Interlocked.CompareExchange(ref target, value, current) != current) { }
     }
 
     private void OnText(TranscriptUpdate update) => TextAvailable?.Invoke(update);
