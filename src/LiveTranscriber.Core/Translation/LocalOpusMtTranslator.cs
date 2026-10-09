@@ -93,7 +93,7 @@ public sealed class LocalOpusMtTranslator : ITextTranslator
             throw new InvalidOperationException("Offline translation worker script was not installed.");
     }
 
-    internal static bool IsReadyMessage(string line)
+    public static bool IsReadyMessage(string line)
     {
         try
         {
