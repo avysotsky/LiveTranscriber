@@ -45,6 +45,7 @@ public partial class MainWindow : Window
     private long _telemetrySamples;
     private string _previousDiagnosticReport = "No diagnostic session has been completed.";
     private readonly DispatcherTimer _resourceTimer;
+    private readonly DispatcherTimer _translationTimer;
     private string _hypothesis = string.Empty;
     private bool _busy;
 
@@ -56,6 +57,8 @@ public partial class MainWindow : Window
         RefreshProcesses();
         _resourceTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
         _resourceTimer.Tick += (_, _) => UpdateResources();
+        _translationTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) };
+        _translationTimer.Tick += (_, _) => TrySubmitInterimTranslation();
     }
 
     private void TranslationProvider_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -186,8 +189,10 @@ public partial class MainWindow : Window
                         ? new GroqRussianTranslator(Environment.GetEnvironmentVariable("GROQ_API_KEY") ?? "")
                         : _offlineTranslator.CreateSessionTranslator();
                 translationCandidate = new TranslationPipeline(translator,
-                    _translationUsesCloud || _translationUsesChatGpt
-                        ? TimeSpan.FromMilliseconds(2500) : TimeSpan.Zero);
+                    _translationUsesChatGpt
+                        ? TimeSpan.FromMilliseconds(600)
+                        : _translationUsesCloud ? TimeSpan.FromMilliseconds(2200)
+                        : TimeSpan.Zero);
                 TranslationPipeline active = translationCandidate;
                 active.Translated += (russianText, generation) =>
                     _ = Dispatcher.BeginInvoke(() =>
@@ -257,6 +262,7 @@ public partial class MainWindow : Window
             HealthText.Text = "Health: warming up";
             ResourceText.Text = "Gathering CPU, RAM, queue and ASR processing metrics...";
             _resourceTimer.Start();
+            if (_translations is not null) _translationTimer.Start();
         }
         catch (Exception ex)
         {
@@ -294,6 +300,7 @@ public partial class MainWindow : Window
         if (_busy || _session is null) return;
         _busy = true;
         _resourceTimer.Stop();
+        _translationTimer.Stop();
         StopButton.IsEnabled = false;
         StatusText.Text = "Stopping...";
         var session = _session;
@@ -363,7 +370,6 @@ public partial class MainWindow : Window
             PipelineHealth.UnderPressure => "Health: under pressure — reduce load or choose Cloud manually",
             _ => "Health: warming up"
         };
-        TrySubmitInterimTranslation();
         RefreshTranslationStatus();
     }
 
@@ -411,9 +417,23 @@ public partial class MainWindow : Window
         TranslationPipeline? pipeline = _translations;
         if (pipeline is null || _session is null) return;
 
-        // At most one changed interim hypothesis every four seconds; do not
-        // turn each Sherpa token into an API request.
+        // GPT uses short, recent interim windows so the visible translation
+        // does not wait for Sherpa's final endpoint of a long utterance.
+        // No audio callback is blocked by any text translation request.
         string english = _hypothesis.Trim();
+        if (_translationUsesChatGpt)
+        {
+            TranslationMetrics current = pipeline.GetMetrics();
+            bool busy = current.PendingPhrases > 0 ||
+                current.ApiRequestsStarted > current.ApiRequestsSucceeded +
+                    current.ApiRequestsFailed;
+            if (busy) return; // Only one pending/active GPT request at a time.
+            if (english.Length > 240)
+            {
+                int split = english.IndexOf(' ', english.Length - 240);
+                english = split >= 0 ? english[(split + 1)..] : english[^240..];
+            }
+        }
         if (!_translationUsesCloud && !_translationUsesChatGpt)
         {
             // Audio recognition is strictly more important than interim RU.
@@ -434,8 +454,11 @@ public partial class MainWindow : Window
                 english = split >= 0 ? english[(split + 1)..] : english[^280..];
             }
         }
+        TimeSpan cadence = _translationUsesChatGpt
+            ? TimeSpan.FromMilliseconds(1500)
+            : TimeSpan.FromSeconds(4);
         if (english.Length < 12 || english == _lastPreviewEnglish ||
-            DateTimeOffset.UtcNow - _lastPreviewSubmitted < TimeSpan.FromSeconds(4))
+            DateTimeOffset.UtcNow - _lastPreviewSubmitted < cadence)
             return;
 
         if (pipeline.TryEnqueuePreview(english))
@@ -587,6 +610,7 @@ public partial class MainWindow : Window
     protected override async void OnClosed(EventArgs e)
     {
         _resourceTimer.Stop();
+        _translationTimer.Stop();
         if (_translations is not null)
         {
             try { await _translations.DisposeAsync(); }
