@@ -35,6 +35,25 @@ Check **Auto-translate EN → RU**, choose **Local OPUS-MT (offline)** (default)
 
 **No API keys** needed in the offline path. After setup, Windows Defender Firewall may be used to block network access to the application and worker for verification; do not block the one-time installer while fetching model packages.
 
+## Recovering from an interrupted model conversion
+
+If Python packages were installed, but the conversion printed
+`RuntimeError: output directory ... already exists`, **do not remove your
+Python virtual environment or reinstall the packages**. The model preparation
+script is safe to rerun and repairs the dedicated incomplete model directory:
+
+```powershell
+cd D:\Projects\LiveTranscriber
+& ".\.venv-lt\Scripts\python.exe" ".\tools\prepare_opus_mt.py" --output "D:\Models\opus-mt-en-ru-ct2"
+```
+
+The setup uses CTranslate2's documented `force=True` behavior for the
+**dedicated offline model destination**, and skips reconversion once all
+four required local artifacts are present. Do not use this destination for
+unrelated personal files. Hugging Face's Windows symlink-cache warning only
+indicates that the download cache may require more disk space; it is not
+the cause of this conversion error.
+
 ## Limitations / verification
 
 - OPUS-MT is a dedicated MT model, not a context-rich LLM. Validate .NET, dependency injection and C# identifier handling on representative interview speech. The output may mistranslate identifiers, punctuation and unfinished ASR hypotheses.
