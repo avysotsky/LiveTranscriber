@@ -39,8 +39,9 @@ public sealed class LocalOpusMtTranslator : ITextTranslator
             RedirectStandardInput = true,
             RedirectStandardOutput = true,
             RedirectStandardError = false,
-            StandardInputEncoding = Encoding.UTF8,
-            StandardOutputEncoding = Encoding.UTF8
+            // Python json.loads expects a JSON object at column 1 (no UTF-8 BOM).
+            StandardInputEncoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
+            StandardOutputEncoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false)
         };
         if (Path.GetFileNameWithoutExtension(python).Equals("py", StringComparison.OrdinalIgnoreCase))
             info.ArgumentList.Add("-3");
