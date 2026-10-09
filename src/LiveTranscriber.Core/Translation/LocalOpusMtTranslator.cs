@@ -17,6 +17,9 @@ public sealed class LocalOpusMtTranslator : ITextTranslator
 
     private LocalOpusMtTranslator(Process process) => _process = process;
 
+    /// <summary>Exposes the separate local CPU worker for accurate combined CPU/RAM reporting.</summary>
+    public int WorkerProcessId => _process.Id;
+
     public static async Task<LocalOpusMtTranslator> StartAsync(
         string? modelDirectory = null,
         string? pythonExecutable = null,
@@ -63,6 +66,15 @@ public sealed class LocalOpusMtTranslator : ITextTranslator
             process.Dispose();
             throw new InvalidOperationException(
                 "Offline Python translator could not start. Set LIVE_TRANSLATOR_PYTHON to your Python venv python.exe.");
+        }
+
+        // Keep offline translation lower-priority than the conference and local ASR.
+        // This is a separate process, so its CPU was absent from older app-only counters.
+        if (OperatingSystem.IsWindows())
+        {
+            try { process.PriorityClass = ProcessPriorityClass.BelowNormal; }
+            catch (Exception ex) when (ex is InvalidOperationException or
+                System.ComponentModel.Win32Exception) { }
         }
 
         var translator = new LocalOpusMtTranslator(process);
