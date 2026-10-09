@@ -19,6 +19,8 @@ jobs:
           python-version: '3.11'
       - name: Verify Python local translator scripts
         run: python -m py_compile tools/local_translate_worker.py tools/prepare_opus_mt.py
+      - name: Test interrupted OPUS-MT setup recovery
+        run: python -m unittest discover -s tools -p "test_prepare_opus_mt.py" -v
       - name: Restore
         run: dotnet restore LiveTranscriber.sln
       - name: Test core
