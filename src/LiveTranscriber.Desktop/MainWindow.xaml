@@ -45,7 +45,15 @@
              TextWrapping="Wrap" AcceptsReturn="True"/>
     <StackPanel Grid.Row="4" Margin="0,10,0,0">
       <TextBlock x:Name="StatusText" Text="Ready. No microphone is opened." Foreground="#555555"/>
-      <TextBlock x:Name="ResourceText" Text="CPU/RAM measurements available after Start." Foreground="#444444"/>
+      <TextBlock x:Name="ResourceText" Text="CPU/RAM measurements available after Start."
+                 TextWrapping="Wrap" Foreground="#444444"/>
+      <StackPanel Orientation="Horizontal" Margin="0,5,0,3">
+        <TextBlock x:Name="HealthText" Text="Health: not measured" VerticalAlignment="Center"
+                   Foreground="#555555" Margin="0,0,16,0"/>
+        <Button x:Name="CopyDiagnosticsButton" Content="Copy diagnostics" Width="125"
+                Click="CopyDiagnostics_Click"
+                ToolTip="Copies only diagnostic counters, not audio or transcript text."/>
+      </StackPanel>
       <TextBlock Foreground="#777777" FontSize="12"
                  Text="App mode captures the chosen PID and descendants. Choose the conferencing app's main window."/>
     </StackPanel>
