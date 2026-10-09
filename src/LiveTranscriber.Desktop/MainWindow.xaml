@@ -85,7 +85,7 @@
                VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
                TextWrapping="Wrap" AcceptsReturn="True" Margin="0,0,0,10"/>
       <TextBlock Grid.Row="2" FontSize="14" FontWeight="SemiBold" Margin="0,0,0,5"
-                 Text="Русский — перевод завершённых фраз"/>
+                 Text="Русский — непрерывный перевод (показанный текст сохраняется)"/>
       <TextBox x:Name="RussianBox" Grid.Row="3" FontSize="18" FontFamily="Segoe UI"
                Padding="10" Background="#FFF6F9F6" BorderBrush="#FFCCD2DB" IsReadOnly="True"
                VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"

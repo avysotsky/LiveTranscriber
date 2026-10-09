@@ -102,7 +102,7 @@ public sealed class TranslationPipelineTests
     }
 
     [Fact]
-    public async Task FailedStreamClearsProvisionalTextAndDoesNotAppendFinal()
+    public async Task FailedStreamPreservesLastVisibleTextAndDoesNotAppendFinal()
     {
         var backend = new ControlledStreamingTranslator();
         await using var sut = new TranslationPipeline(backend, TimeSpan.Zero);
@@ -115,8 +115,7 @@ public sealed class TranslationPipelineTests
         backend.PublishPartial("Незаконченный перевод");
         backend.Fail.TrySetResult();
         await sut.CompleteAsync(TimeSpan.FromSeconds(5));
-        Assert.Equal("Незаконченный перевод", visible.First());
-        Assert.Equal(string.Empty, visible.Last());
+        Assert.Equal(new[] { "Незаконченный перевод" }, visible.ToArray());
         Assert.NotEmpty(failures);
         Assert.Equal(0, sut.GetMetrics().ApiRequestsSucceeded);
         Assert.Equal(1, sut.GetMetrics().ApiRequestsFailed);

@@ -20,9 +20,9 @@ public partial class MainWindow : Window
         async token => await LocalOpusMtTranslator.StartAsync(cancellationToken: token)
             .ConfigureAwait(false));
     private readonly StringBuilder _confirmed = new();
-    private readonly StringBuilder _russian = new();
-    private string _previewRussian = string.Empty;
+    private readonly RussianTranscriptBuffer _russianText = new();
     private string _lastPreviewEnglish = string.Empty;
+    private readonly IncrementalEnglishChunker _chatGptChunks = new();
     private DateTimeOffset _lastPreviewSubmitted;
     private TranslationMetrics? _lastTranslationMetrics;
     private bool _translationWasEnabled;
@@ -176,9 +176,9 @@ public partial class MainWindow : Window
             _translationUsesChatGpt = TranslationProviderSelect.SelectedIndex == 2;
             _lastTranslationMetrics = null;
             _lastTranslationError = string.Empty;
-            _previewRussian = string.Empty;
             _lastPreviewEnglish = string.Empty;
             _lastPreviewSubmitted = DateTimeOffset.MinValue;
+            _chatGptChunks.Clear();
             if (_translationWasEnabled)
             {
                 // Groq text upload requires *both* selecting Groq and enabling translation.
@@ -190,17 +190,17 @@ public partial class MainWindow : Window
                         : _offlineTranslator.CreateSessionTranslator();
                 translationCandidate = new TranslationPipeline(translator,
                     _translationUsesChatGpt
-                        ? TimeSpan.FromMilliseconds(600)
+                        ? TimeSpan.FromMilliseconds(300)
                         : _translationUsesCloud ? TimeSpan.FromMilliseconds(2200)
-                        : TimeSpan.Zero);
+                        : TimeSpan.Zero,
+                    maxFinalBatch: _translationUsesChatGpt ? 1 : 4);
                 TranslationPipeline active = translationCandidate;
                 active.Translated += (russianText, generation) =>
                     _ = Dispatcher.BeginInvoke(() =>
                     {
                         if (!ReferenceEquals(_translations, active) ||
                             generation != active.Generation) return;
-                        _russian.AppendLine(russianText.Trim());
-                        _previewRussian = string.Empty;
+                        _russianText.Commit(russianText);
                         _lastTranslationError = string.Empty;
                         RenderRussian();
                         RefreshTranslationStatus();
@@ -210,8 +210,8 @@ public partial class MainWindow : Window
                     {
                         if (!ReferenceEquals(_translations, active) ||
                             generation != active.Generation) return;
-                        _previewRussian = russianText.Trim();
-                        RenderRussian();
+                        if (_russianText.UpdatePreview(russianText))
+                            RenderRussian();
                         RefreshTranslationStatus();
                     });
                 active.Error += message =>
@@ -301,6 +301,7 @@ public partial class MainWindow : Window
         _busy = true;
         _resourceTimer.Stop();
         _translationTimer.Stop();
+        if (_translationUsesChatGpt) DrainChatGptChunks();
         StopButton.IsEnabled = false;
         StatusText.Text = "Stopping...";
         var session = _session;
@@ -417,23 +418,16 @@ public partial class MainWindow : Window
         TranslationPipeline? pipeline = _translations;
         if (pipeline is null || _session is null) return;
 
-        // GPT uses short, recent interim windows so the visible translation
-        // does not wait for Sherpa's final endpoint of a long utterance.
-        // No audio callback is blocked by any text translation request.
-        string english = _hypothesis.Trim();
+        // ChatGPT translates sequential English chunks into durable Russian
+        // output. The interim window is NOT replaced wholesale: previously
+        // translated Russian remains in the committed history.
         if (_translationUsesChatGpt)
         {
-            TranslationMetrics current = pipeline.GetMetrics();
-            bool busy = current.PendingPhrases > 0 ||
-                current.ApiRequestsStarted > current.ApiRequestsSucceeded +
-                    current.ApiRequestsFailed;
-            if (busy) return; // Only one pending/active GPT request at a time.
-            if (english.Length > 240)
-            {
-                int split = english.IndexOf(' ', english.Length - 240);
-                english = split >= 0 ? english[(split + 1)..] : english[^240..];
-            }
+            _chatGptChunks.Observe(_hypothesis, isFinal: false);
+            DrainChatGptChunks();
+            return;
         }
+        string english = _hypothesis.Trim();
         if (!_translationUsesCloud && !_translationUsesChatGpt)
         {
             // Audio recognition is strictly more important than interim RU.
@@ -468,11 +462,19 @@ public partial class MainWindow : Window
         }
     }
 
+    private void DrainChatGptChunks()
+    {
+        TranslationPipeline? pipeline = _translations;
+        if (pipeline is null) return;
+        // Strict FIFO; short chunks avoid one huge GPT output at ASR endpoint.
+        // Keep excess in the chunker's own queue rather than dropping speech.
+        if (pipeline.PendingPhrases >= 3) return;
+        _chatGptChunks.Drain(pipeline.TryEnqueueLiveChunk);
+    }
+
     private void RenderRussian()
     {
-        RussianBox.Text = _russian.ToString() +
-            (string.IsNullOrWhiteSpace(_previewRussian)
-                ? string.Empty : _previewRussian + " …");
+        RussianBox.Text = _russianText.Text;
         RussianBox.ScrollToEnd();
     }
 
@@ -553,7 +555,8 @@ public partial class MainWindow : Window
 
     private void UpdateText(TranscriptUpdate update)
     {
-        if (update.IsFinal && !string.IsNullOrWhiteSpace(update.Text))
+        if (update.IsFinal && !string.IsNullOrWhiteSpace(update.Text) &&
+            !_translationUsesChatGpt)
         {
             _translations?.TryEnqueueFinal(update.Text);
             _lastPreviewEnglish = string.Empty;
@@ -565,8 +568,15 @@ public partial class MainWindow : Window
             {
                 if (!string.IsNullOrWhiteSpace(update.Text))
                     _confirmed.AppendLine(update.Text.Trim());
+                if (_translationUsesChatGpt && _translations is not null)
+                {
+                    _chatGptChunks.Observe(update.Text, isFinal: true);
+                    DrainChatGptChunks();
+                }
                 _hypothesis = string.Empty;
-                _previewRussian = string.Empty;
+                // IMPORTANT: never clear already translated RU just because
+                // Sherpa signalled the end of an English phrase. Its final RU
+                // may still take seconds to arrive over the network.
                 RenderRussian();
                 RefreshTranslationStatus();
             }
@@ -597,9 +607,9 @@ public partial class MainWindow : Window
     private void Clear_Click(object sender, RoutedEventArgs e)
     {
         _translations?.ClearPending();
+        _chatGptChunks.Clear();
         _confirmed.Clear();
-        _russian.Clear();
-        _previewRussian = string.Empty;
+        _russianText.Clear();
         _lastPreviewEnglish = string.Empty;
         _hypothesis = string.Empty;
         RenderRussian();

@@ -29,6 +29,7 @@ public sealed class TranslationPipeline : IAsyncDisposable
     private readonly CancellationTokenSource _shutdown = new();
     private readonly Task _worker;
     private readonly TimeSpan _requestInterval;
+    private readonly int _maxFinalBatch;
     private long _generation;
     private long _previewRevision;
     private int _accepting = 1;
@@ -47,11 +48,14 @@ public sealed class TranslationPipeline : IAsyncDisposable
     public long Generation => Interlocked.Read(ref _generation);
     public int PendingPhrases => Math.Max(0, Volatile.Read(ref _pending));
 
-    public TranslationPipeline(ITextTranslator translator, TimeSpan? requestInterval = null)
+    public TranslationPipeline(ITextTranslator translator, TimeSpan? requestInterval = null,
+        int maxFinalBatch = 4)
     {
         _translator = translator ?? throw new ArgumentNullException(nameof(translator));
         _requestInterval = requestInterval ?? TimeSpan.FromMilliseconds(2200);
         if (_requestInterval < TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(requestInterval));
+        if (maxFinalBatch is < 1 or > 4) throw new ArgumentOutOfRangeException(nameof(maxFinalBatch));
+        _maxFinalBatch = maxFinalBatch;
         _worker = Task.Run(ConsumeAsync);
     }
 
@@ -66,9 +70,23 @@ public sealed class TranslationPipeline : IAsyncDisposable
     public bool TryEnqueueFinal(string text)
     {
         if (string.IsNullOrWhiteSpace(text)) return true;
-        // A final phrase invalidates any provisional translation currently in flight.
+        // A real ASR endpoint invalidates its previous *preview* translation.
         long revision = Interlocked.Increment(ref _previewRevision);
         bool added = Enqueue(new Phrase(text.Trim(), Generation, false, revision), true);
+        if (added) Interlocked.Increment(ref _finalQueued);
+        return added;
+    }
+
+    /// <summary>
+    /// A confirmed *incremental* English chunk from ongoing speech. Keep
+    /// earlier streamed tokens visible even when subsequent chunks are queued.
+    /// Each segment must be committed separately (maxFinalBatch=1).
+    /// </summary>
+    public bool TryEnqueueLiveChunk(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return true;
+        bool added = Enqueue(new Phrase(text.Trim(), Generation, false,
+            Interlocked.Read(ref _previewRevision)), true);
         if (added) Interlocked.Increment(ref _finalQueued);
         return added;
     }
@@ -137,7 +155,7 @@ public sealed class TranslationPipeline : IAsyncDisposable
                 if (!first.IsPreview)
                 {
                     // A provisional result is never batched with finalized phrases.
-                    while (phrases.Count < 4 && _queue.Reader.TryRead(out Phrase next))
+                    while (phrases.Count < _maxFinalBatch && _queue.Reader.TryRead(out Phrase next))
                     {
                         Interlocked.Decrement(ref _pending);
                         if (!next.IsPreview && next.Generation == first.Generation)
@@ -167,7 +185,8 @@ public sealed class TranslationPipeline : IAsyncDisposable
                                 // A newer preview, final event, or Clear invalidates
                                 // stale in-flight streamed tokens.
                                 if (first.Generation == Generation &&
-                                    first.PreviewRevision == Interlocked.Read(ref _previewRevision) &&
+                                    (!first.IsPreview || first.PreviewRevision ==
+                                        Interlocked.Read(ref _previewRevision)) &&
                                     Volatile.Read(ref _accepting) != 0 &&
                                     !string.IsNullOrWhiteSpace(cumulative))
                                     PreviewTranslated?.Invoke(cumulative, first.Generation);
@@ -194,12 +213,9 @@ public sealed class TranslationPipeline : IAsyncDisposable
                 catch (OperationCanceledException) when (_shutdown.IsCancellationRequested) { break; }
                 catch (Exception ex)
                 {
-                    // Hide incomplete partial GPT text on failure; do not
-                    // misrepresent it as a successful translated sentence.
-                    if (_translator is IStreamingTextTranslator &&
-                        first.Generation == Generation &&
-                        first.PreviewRevision == Interlocked.Read(ref _previewRevision))
-                        PreviewTranslated?.Invoke(string.Empty, first.Generation);
+                    // Retain the last visible Russian preview when a cloud
+                    // request fails. Erasing it caused a blank translation
+                    // panel for 10-15 seconds; error status is shown separately.
                     Interlocked.Increment(ref _requestsFailed);
                     if (first.Generation == Generation)
                         Error?.Invoke(ex is HttpRequestException or TaskCanceledException
