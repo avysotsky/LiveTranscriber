@@ -21,3 +21,22 @@ Automated green build validates compilation and isolated pipeline behavior. It *
 This initial branch targets **.NET 9** for Visual Studio 2022 17.12+ compatibility. Microsoft ends .NET 9 and .NET 8 servicing on **2026-11-10**. This is temporary: plan LT-02/LT-03 retargeting to .NET 10 (LTS) and Visual Studio 2026, or use the .NET 10 CLI / toolchain. Do not ship a supported long-term release on .NET 9 after its end-of-support date.
 
 Reference: https://devblogs.microsoft.com/dotnet/dotnet-8-9-end-of-support/
+
+
+## LT-01 real-device smoke test (user-reported, 2026-10-09)
+
+- Machine: i7-8850H, 16 GB RAM, other workload occupying approximately half of the available computing capacity.
+- Device WASAPI loopback + offline Sherpa-ONNX Zipformer INT8: real English playback was recognized.
+- Subjective transcription quality: "almost no errors."
+- LiveTranscriber process CPU observed: **12%**; application memory: **275 MB**.
+- Sampling method, measurement interval, CPU peaks and end-to-end latency: **not measured**.
+- This is preliminary observational evidence, NOT an acceptance benchmark for the application-capture backend or a 30-minute soak test.
+
+## LT-02 process loopback verification (not yet performed)
+
+1. Choose **Selected application** and the main visible browser / conferencing application window. Alternatively type the numeric PID.
+2. Ensure Windows build supports process-loopback activation. Do not silently switch to full-device capture when it fails.
+3. Play recognizable English speech in the selected app and unrelated audio in a separate process; only the selected process tree should be transcribed.
+4. Repeat for Chrome / Edge multi-process setups, Teams and Zoom: if browser audio originates outside the selected process tree, select a different PID rather than assuming isolation.
+5. Verify CPU, RAM, dropped chunks, local-processing RTF. Treat cloud upload ratio separately from local RTF.
+6. Stop and restart capture, change process ID, exit selected application while capturing, and verify native resources are released.
