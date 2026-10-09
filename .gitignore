@@ -9,3 +9,6 @@ models/
 *.log
 .env
 *.secrets.json
+
+# Local offline translation virtual environment
+.venv-lt/

@@ -6,8 +6,8 @@ Windows **speaker-output-only** English live transcription with optional **autom
 - **Cloud:** Azure Speech continuous recognition. Audio leaves the machine **only** after selecting Cloud and pressing Start.
 - **Capture:** Windows WASAPI render-device loopback **or** selected application process-tree loopback; the app never opens a microphone.
 - **Audio:** downmix and stream resampling to mono 16 kHz, bounded queue (12 chunks), interim/final text.
-- **Translation:** optional Groq GPT-OSS 20B English → Russian, translating both **ongoing interim hypotheses** (replaceable preview) and **finalized English phrases**; English and Russian appear in separate panels.
-- **Privacy:** no recording or transcript persistence; secrets only from process environment variables. With translation enabled, **English finalized text leaves the machine** (even when ASR is Local). Raw PCM audio is never sent to Groq.
+- **Translation:** optional **offline OPUS-MT EN → RU (INT8, CTranslate2)** as the **default translation provider**, plus opt-in Groq. Both translate interim and finalized English into a separate Russian pane.
+- **Privacy:** no recording or transcript persistence. With Local recognition + Local translation, English audio and text never leave the computer. **Only if you explicitly select Groq cloud translation AND check Auto-translate** are interim/final English transcripts sent to Groq; audio is never sent to Groq. Selecting Azure recognition separately transmits audio.
 
 **Capture scopes:** "All speaker output" captures the entire default output device; "Selected application" captures a selected PID and child processes. This does not capture the microphone directly, but microphone monitoring/echo replayed through the selected audio stream may still appear. No silent fallback from app capture to device capture is allowed. Device selection and automatic provider fallback remain future increments.
 
@@ -16,7 +16,7 @@ Windows **speaker-output-only** English live transcription with optional **autom
 - Windows 10/11 x64; working output device. App loopback needs at least Windows 10 version 2004 (build 19041) for the NAudio 3 backend; actual driver/OS support must be tested. Microsoft's sample documents a more conservative build 20348 baseline.
 - Visual Studio 2022 17.12+ and **.NET 9 SDK**, or .NET 9 CLI.
 - Local streaming model for Local mode, Azure AI Speech resource for Cloud mode.
-- For optional Russian translation, Groq API key and Internet access (separate from Local vs Azure speech recognition).
+- Offline Russian translation: Python 3.11, one-time local OPUS-MT preparation, and free disk space; no API account required. Groq is optional.
 
 ## Local setup
 
@@ -47,22 +47,37 @@ $env:AZURE_SPEECH_REGION='YOUR_REGION'
 
 Azure may incur usage charges. Do not commit or log keys. Cloud transmits audio only after explicit opt-in by selecting Cloud and clicking Start. Automatic cloud fallback is **disabled**.
 
-## Optional automatic English → Russian translation (Groq)
+## Automatic English → Russian translation
 
-1. Create a Groq API key at https://console.groq.com/keys (free-tier limits and model access depend on the Groq account; requests may be metered).
-2. Set the key in the same PowerShell session **before starting the app** (never paste it into GitHub or share it in transcripts):
+Two independent selectors are available: **Engine** (English speech recognition: Local/Azure), and **Translator** (Russian text translation: **Local OPUS-MT (offline)** / Groq cloud).
+
+### Offline translator — one-time install on Windows
+
+Run once in PowerShell. This step downloads Python dependencies, the public Helsinki-NLP/opus-mt-en-ru model and converts it to CTranslate2 INT8. The app **never** downloads a model while running.
 
 ```powershell
-$env:GROQ_API_KEY = 'YOUR_GROQ_API_KEY'
+cd D:\Projects\LiveTranscriber
+powershell -ExecutionPolicy Bypass -File tools\setup_local_translation.ps1
 ```
 
-3. Run LiveTranscriber; keep **Engine: Local (offline)** and select your application in **Capture** if you want local audio recognition. Check **Auto-translate EN → RU (Groq cloud)** before pressing Start.
-4. The app automatically translates changed **interim English hypotheses** approximately every 4 seconds even during continuous speech. Interim Russian appears with an ellipsis and is replaced on new hypotheses. Once Sherpa/Azure emits a **final** English phrase, its stable Russian translation is appended. English remains visible in the upper panel. Use **Copy** to copy both. **Clear** empties both panes and ignores outdated responses. **Stop** gives pending final translations up to 10 seconds to finish.
-5. Before the first session, press **Test Groq** with the checkbox enabled. This sends only a **fixed sample sentence**, not interview audio or text, and displays the Russian result or a safe connection/API error.
+After successful setup, set the worker and model paths in the **same PowerShell session** you launch the app from:
 
-**Important privacy distinction:** when Translate is checked, **interim and finalized English transcript text are uploaded to Groq**, even if Engine is Local. Raw audio never goes to Groq. Translation is OFF by default. Do not enable it if the interview's confidentiality rules prohibit third-party services. Disabling the translation checkbox requires stopping and restarting; no automatic fallback or provider switching takes place.
+```powershell
+$env:LIVE_TRANSLATOR_MODEL_DIR = "D:\Models\opus-mt-en-ru-ct2"
+$env:LIVE_TRANSLATOR_PYTHON = "D:\Projects\LiveTranscriber\.venv-lt\Scripts\python.exe"
+$env:LIVE_TRANSCRIBER_MODEL_DIR = "D:\Models\sherpa-onnx-streaming-zipformer-en-2023-06-21"
+dotnet run --project src/LiveTranscriber.Desktop -c Release
+```
 
-The implementation uses Groq Chat Completions (`openai/gpt-oss-20b`). It coalesces up to four final phrases while under load and throttles requests to approximately one call per 2.2 seconds. Free-tier and rate limits may cause delays/errors; the Translation status shows **final/interim queued counts, requests attempted/succeeded/failed, backlog and the latest safe error** without interrupting English ASR. It never stores API keys or saves translations to files. With translation enabled, both unfinished and finalized **English text are sent to Groq**; audio is not. Incoming intermediate hypotheses are throttled to limit API usage. Cloud requests can incur usage charges depending on the Groq plan.
+Set Engine to **Local (offline)**, Translator to **Local OPUS-MT (offline)** (selected by default), check **Auto-translate EN → RU**, then click **Test translator**. It should show a Russian translation of a fixed sentence, without an API key or any network request. Start transcription normally.
+
+### Optional Groq translator
+
+Choose **Groq (cloud)** and enable translation explicitly before Start. `GROQ_API_KEY` must be set. Interim and final **English transcript text**, not PCM audio, are then sent to Groq. Charges/quotas depend on your provider plan. Cloud mode does not start automatically; the Local translator never falls back to it.
+
+Interim English hypotheses are sent for translation at a bounded cadence (~4 seconds). Temporary Russian text is superseded as the utterance changes; finalized translations are appended in order. **Copy** copies both languages; **Clear** discards pending outdated translations; Stop attempts to complete pending final translations. The status row shows request success/errors for the selected provider.
+
+See [LT-05 offline translation setup and limitations](docs/LT05_LOCAL_RUSSIAN_TRANSLATION.md). OPUS-MT may mistranslate specialized .NET terminology or partial sentences; test representative real speech.
 
 ## Build, test, run
 
@@ -72,7 +87,7 @@ dotnet test LiveTranscriber.sln -c Release
 dotnet run --project src/LiveTranscriber.Desktop/LiveTranscriber.Desktop.csproj -c Release
 ```
 
-Select Local or Cloud and optionally opt into Groq English-to-Russian translation. For source, choose **All speaker output** (works like LT-01) or **Selected application** and select its visible window. You can also type a numeric PID in the process selector. Press Refresh to update the process list. Some browsers have multiple processes: choose the main conferencing window and verify that its child audio renderer belongs to that process tree. There is no silent fallback to whole-device audio if app capture fails. Press Start; the app shows partial and finalized phrases. Use Stop, Copy, Clear.
+Select Local or Cloud speech recognition and independently select offline OPUS-MT (default) or Groq translation. For source, choose **All speaker output** (works like LT-01) or **Selected application** and select its visible window. You can also type a numeric PID in the process selector. Press Refresh to update the process list. Some browsers have multiple processes: choose the main conferencing window and verify that its child audio renderer belongs to that process tree. There is no silent fallback to whole-device audio if app capture fails. Press Start; the app shows partial and finalized phrases. Use Stop, Copy, Clear.
 
 The bottom of the UI reports **process CPU share, working-set RAM and session peaks; queued audio duration; audio-loss seconds; average/peak capture callback-to-ASR queue wait; and client processing ratio**. In Local mode the ratio is local inference RTF; in Cloud mode it measures upload/write time only, **not** service latency. After pressing Stop, use **Copy diagnostics** to copy a privacy-safe session report (no speech or transcript text). Counters are otherwise kept only in memory. **Queue wait is not the end-to-end speech-to-transcript delay**: Windows buffering, transcription endpointing and UI rendering are not included.
 
