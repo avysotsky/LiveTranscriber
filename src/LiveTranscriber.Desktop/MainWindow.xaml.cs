@@ -27,7 +27,13 @@ public partial class MainWindow : Window
     private TranslationMetrics? _lastTranslationMetrics;
     private bool _translationWasEnabled;
     private bool _translationUsesCloud;
-    private string TranslationProviderName => _translationUsesCloud ? "Groq" : "Local OPUS-MT";
+    private bool _translationUsesChatGpt;
+    private readonly ChatGptPlanConnection _chatGptConnection = new();
+    private string TranslationProviderName => _translationUsesChatGpt
+        ? "ChatGPT plan" : _translationUsesCloud ? "Groq" : "Local OPUS-MT";
+    private string SelectedChatGptModel =>
+        (ChatGptModelSelect.SelectedItem as ChatGptModel)?.Slug ??
+        throw new InvalidOperationException("Sign in with ChatGPT and select a model first.");
     private string _lastTranslationError = string.Empty;
     private SystemResourceSampler _resourceSampler = new();
     private PipelineHealthMonitor _healthMonitor = new();
@@ -50,6 +56,59 @@ public partial class MainWindow : Window
         RefreshProcesses();
         _resourceTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
         _resourceTimer.Tick += (_, _) => UpdateResources();
+    }
+
+    private void TranslationProvider_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (ChatGptSignInButton is null || ChatGptModelSelect is null ||
+            ChatGptDisconnectButton is null) return;
+        bool chatgpt = TranslationProviderSelect.SelectedIndex == 2;
+        ChatGptSignInButton.IsEnabled = chatgpt && !_busy && _session is null;
+        ChatGptModelSelect.IsEnabled = chatgpt && _chatGptConnection.IsConnected &&
+            _session is null && !_busy;
+        ChatGptDisconnectButton.IsEnabled = _chatGptConnection.IsConnected &&
+            _session is null && !_busy;
+    }
+
+    private async void ChatGptSignIn_Click(object sender, RoutedEventArgs e)
+    {
+        if (_session is not null || _busy) return;
+        _busy = true;
+        SetCaptureControls(false);
+        StartButton.IsEnabled = false;
+        ChatGptAccountStatus.Text = "Opening secure ChatGPT sign-in in your browser...";
+        try
+        {
+            await _chatGptConnection.SignInAsync();
+            ChatGptAccountStatus.Text = "Signed in; checking available plan models...";
+            IReadOnlyList<ChatGptModel> models = await _chatGptConnection.ListModelsAsync();
+            if (models.Count == 0)
+                throw new InvalidOperationException(
+                    "Sign-in succeeded but no plan models are available for this account.");
+            ChatGptModelSelect.ItemsSource = models;
+            ChatGptModelSelect.SelectedIndex = 0;
+            ChatGptAccountStatus.Text = "Authorized (temporary session)";
+        }
+        catch (Exception ex)
+        {
+            ChatGptAccountStatus.Text = ex is InvalidOperationException
+                ? ex.Message : "ChatGPT sign-in failed. Check browser, network and permissions.";
+        }
+        finally
+        {
+            _busy = false;
+            SetCaptureControls(true);
+            StartButton.IsEnabled = true;
+        }
+    }
+
+    private void ChatGptDisconnect_Click(object sender, RoutedEventArgs e)
+    {
+        if (_session is not null || _busy) return;
+        _chatGptConnection.Disconnect();
+        ChatGptModelSelect.ItemsSource = null;
+        ChatGptAccountStatus.Text = "Disconnected (tokens discarded from memory)";
+        SetCaptureControls(true);
     }
 
     private void CaptureSelect_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -111,6 +170,7 @@ public partial class MainWindow : Window
         {
             _translationWasEnabled = TranslateToggle.IsChecked == true;
             _translationUsesCloud = TranslationProviderSelect.SelectedIndex == 1;
+            _translationUsesChatGpt = TranslationProviderSelect.SelectedIndex == 2;
             _lastTranslationMetrics = null;
             _lastTranslationError = string.Empty;
             _previewRussian = string.Empty;
@@ -120,11 +180,14 @@ public partial class MainWindow : Window
             {
                 // Groq text upload requires *both* selecting Groq and enabling translation.
                 // Local worker never sends HTTP requests or downloads a model.
-                ITextTranslator translator = _translationUsesCloud
-                    ? new GroqRussianTranslator(Environment.GetEnvironmentVariable("GROQ_API_KEY") ?? "")
-                    : _offlineTranslator.CreateSessionTranslator();
+                ITextTranslator translator = _translationUsesChatGpt
+                    ? new ChatGptPlanTranslator(_chatGptConnection, SelectedChatGptModel)
+                    : _translationUsesCloud
+                        ? new GroqRussianTranslator(Environment.GetEnvironmentVariable("GROQ_API_KEY") ?? "")
+                        : _offlineTranslator.CreateSessionTranslator();
                 translationCandidate = new TranslationPipeline(translator,
-                    _translationUsesCloud ? TimeSpan.FromMilliseconds(2200) : TimeSpan.Zero);
+                    _translationUsesCloud || _translationUsesChatGpt
+                        ? TimeSpan.FromMilliseconds(2500) : TimeSpan.Zero);
                 TranslationPipeline active = translationCandidate;
                 active.Translated += (russianText, generation) =>
                     _ = Dispatcher.BeginInvoke(() =>
@@ -156,9 +219,11 @@ public partial class MainWindow : Window
                         }
                     });
                 _translations = active;
-                TranslationStatus.Text = _translationUsesCloud
-                    ? "RU enabled (Groq cloud): English interim and final text are uploaded."
-                    : "RU enabled (local OPUS-MT): English text stays on this machine.";
+                TranslationStatus.Text = _translationUsesChatGpt
+                    ? "RU enabled (ChatGPT plan): interim and final English text sent to OpenAI."
+                    : _translationUsesCloud
+                        ? "RU enabled (Groq cloud): interim and final English text sent to Groq."
+                        : "RU enabled (local OPUS-MT): English text stays on this machine.";
             }
             else TranslationStatus.Text = "RU disabled — select a provider and check Auto-translate.";
 
@@ -179,7 +244,7 @@ public partial class MainWindow : Window
                 ? "Listening to all default speaker playback. No microphone opened."
                 : $"Listening to application PID {selection.ProcessId} and its child processes. No microphone opened.";
             _resourceSampler = new SystemResourceSampler(
-                _translationWasEnabled && !_translationUsesCloud
+                _translationWasEnabled && !_translationUsesCloud && !_translationUsesChatGpt
                     ? () => _offlineTranslator.LocalProcessId : null);
             _resourceSampler.Sample();
             _healthMonitor = new PipelineHealthMonitor();
@@ -212,6 +277,10 @@ public partial class MainWindow : Window
         TranslateToggle.IsEnabled = enabled;
         TranslationProviderSelect.IsEnabled = enabled;
         TestGroqButton.IsEnabled = enabled;
+        ChatGptSignInButton.IsEnabled = enabled && TranslationProviderSelect.SelectedIndex == 2;
+        ChatGptDisconnectButton.IsEnabled = enabled && _chatGptConnection.IsConnected;
+        ChatGptModelSelect.IsEnabled = enabled && _chatGptConnection.IsConnected &&
+            TranslationProviderSelect.SelectedIndex == 2;
         CaptureSelect.IsEnabled = enabled;
         bool app = enabled && CaptureSelect.SelectedIndex == 1;
         ProcessSelect.IsEnabled = app;
@@ -345,7 +414,7 @@ public partial class MainWindow : Window
         // At most one changed interim hypothesis every four seconds; do not
         // turn each Sherpa token into an API request.
         string english = _hypothesis.Trim();
-        if (!_translationUsesCloud)
+        if (!_translationUsesCloud && !_translationUsesChatGpt)
         {
             // Audio recognition is strictly more important than interim RU.
             // Skip previews whenever ASR audio is backing up or the translator
@@ -410,17 +479,21 @@ public partial class MainWindow : Window
         }
 
         bool cloud = TranslationProviderSelect.SelectedIndex == 1;
+        bool chatgpt = TranslationProviderSelect.SelectedIndex == 2;
         TestGroqButton.IsEnabled = false;
         StartButton.IsEnabled = false;
         TranslationProviderSelect.IsEnabled = false;
-        TranslationStatus.Text = cloud
-            ? "RU TEST: contacting Groq with a fixed example sentence..."
-            : "RU TEST: starting the offline OPUS-MT worker...";
+        TranslationStatus.Text = chatgpt
+            ? "RU TEST: using authorized ChatGPT plan with a fixed sample..."
+            : cloud ? "RU TEST: contacting Groq with a fixed example sentence..."
+                : "RU TEST: starting the offline OPUS-MT worker...";
         try
         {
-            ITextTranslator translator = cloud
-                ? new GroqRussianTranslator(Environment.GetEnvironmentVariable("GROQ_API_KEY") ?? "")
-                : await _offlineTranslator.PrepareAsync();
+            ITextTranslator translator = chatgpt
+                ? new ChatGptPlanTranslator(_chatGptConnection, SelectedChatGptModel)
+                : cloud
+                    ? new GroqRussianTranslator(Environment.GetEnvironmentVariable("GROQ_API_KEY") ?? "")
+                    : await _offlineTranslator.PrepareAsync();
             string result;
             try
             {
@@ -431,12 +504,14 @@ public partial class MainWindow : Window
             {
                 // Cloud clients are ephemeral; the local model stays warm between
                 // Test translator, Start and Stop until this window is closed.
-                if (cloud) await translator.DisposeAsync();
+                if (cloud || chatgpt) await translator.DisposeAsync();
             }
-            TranslationStatus.Text = cloud
-                ? "RU TEST: Groq connection OK."
-                : "RU TEST: local translation OK; no network used.";
-            MessageBox.Show(this, result, cloud ? "Groq translation test" : "Offline translation test",
+            TranslationStatus.Text = chatgpt
+                ? "RU TEST: ChatGPT plan translation OK."
+                : cloud ? "RU TEST: Groq connection OK."
+                    : "RU TEST: local translation OK; no network used.";
+            MessageBox.Show(this, result, chatgpt ? "ChatGPT plan translation test"
+                : cloud ? "Groq translation test" : "Offline translation test",
                 MessageBoxButton.OK, MessageBoxImage.Information);
         }
         catch (Exception ex)
@@ -526,6 +601,7 @@ public partial class MainWindow : Window
         }
         try { await _offlineTranslator.DisposeAsync(); }
         catch { /* Stop the locally loaded model when the window closes. */ }
+        await _chatGptConnection.DisposeAsync();
         base.OnClosed(e);
     }
 }
