@@ -173,12 +173,12 @@ public sealed class ChatGptPlanConnection : IAsyncDisposable
         if (File.Exists(file))
         {
             string saved = File.ReadAllText(file).Trim();
-            if (Guid.TryParse(saved.Replace("urn:uuid:", "", StringComparison.Ordinal), out _))
+            if (Guid.TryParse(saved.TrimStart('\uFEFF').Replace("urn:uuid:", "", StringComparison.Ordinal), out _))
                 return saved.StartsWith("urn:uuid:", StringComparison.Ordinal)
                     ? saved : "urn:uuid:" + saved;
         }
         string host = "urn:uuid:" + Guid.NewGuid().ToString();
-        File.WriteAllText(file, host, Encoding.UTF8);
+        File.WriteAllText(file, host, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
         return host;
     }
 
