@@ -55,7 +55,9 @@ dotnet run --project src/LiveTranscriber.Desktop/LiveTranscriber.Desktop.csproj 
 
 Select Local or Cloud. For source, choose **All speaker output** (works like LT-01) or **Selected application** and select its visible window. You can also type a numeric PID in the process selector. Press Refresh to update the process list. Some browsers have multiple processes: choose the main conferencing window and verify that its child audio renderer belongs to that process tree. There is no silent fallback to whole-device audio if app capture fails. Press Start; the app shows partial and finalized phrases. Use Stop, Copy, Clear.
 
-The bottom of the UI reports **process CPU share, working-set RAM, dropped capture chunks**, and **local processing RTF** (compute time / processed audio duration). For Cloud, the ratio measures client audio-write time, not cloud recognition latency. These metrics are never persisted automatically.
+The bottom of the UI reports **process CPU share, working-set RAM and session peaks; queued audio duration; audio-loss seconds; and client processing ratio**. In Local mode the ratio is local inference RTF; in Cloud mode it measures upload/write time only, **not** service latency. After pressing Stop, use **Copy diagnostics** to copy a privacy-safe session report (no speech or transcript text). Counters are otherwise kept only in memory.
+
+The health indicator warns on sustained high CPU (20%+), queue backlog (0.6 s+), local RTF (0.9+) or any new dropped audio. Three clean samples are required for recovery. **It does not automatically upload audio or switch providers.** See [LT-03 performance acceptance plan](docs/LT03_PERFORMANCE_VALIDATION.md) for the 30-minute test procedure.
 
 ## Resource constraints and verification
 
