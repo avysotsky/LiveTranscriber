@@ -2,17 +2,27 @@ using System.Threading.Channels;
 
 namespace LiveTranscriber.Core.Translation;
 
+/// <summary>Non-content metrics for explicit Groq text translation.</summary>
+public sealed record TranslationMetrics(
+    long FinalPhrasesQueued,
+    long PreviewPhrasesQueued,
+    long ApiRequestsStarted,
+    long ApiRequestsSucceeded,
+    long ApiRequestsFailed,
+    int PendingPhrases);
+
 /// <summary>
-/// One non-blocking producer, one ordered HTTP worker, batched finalized phrases.
-/// Never delays the ASR worker, saves audio, or uploads anything before opt-in.
+/// ASR producers never wait for translation. Finalized phrases are translated in
+/// original order, while provisional hypotheses can be superseded without display
+/// of stale translations. Groq is only called by an explicitly opted-in instance.
 /// </summary>
 public sealed class TranslationPipeline : IAsyncDisposable
 {
-    private readonly record struct Phrase(string Text, long Generation);
+    private readonly record struct Phrase(string Text, long Generation, bool IsPreview, long PreviewRevision);
     private readonly ITextTranslator _translator;
     private readonly Channel<Phrase> _queue = Channel.CreateBounded<Phrase>(new BoundedChannelOptions(64)
     {
-        SingleReader = false, // ClearPending may drain outstanding phrases.
+        SingleReader = false, // ClearPending can evict old phrases.
         SingleWriter = false,
         FullMode = BoundedChannelFullMode.Wait
     });
@@ -20,12 +30,20 @@ public sealed class TranslationPipeline : IAsyncDisposable
     private readonly Task _worker;
     private readonly TimeSpan _requestInterval;
     private long _generation;
+    private long _previewRevision;
     private int _accepting = 1;
     private int _pending;
     private Phrase? _carried;
+    private long _finalQueued;
+    private long _previewQueued;
+    private long _requestsStarted;
+    private long _requestsSucceeded;
+    private long _requestsFailed;
 
     public event Action<string, long>? Translated;
+    public event Action<string, long>? PreviewTranslated;
     public event Action<string>? Error;
+
     public long Generation => Interlocked.Read(ref _generation);
     public int PendingPhrases => Math.Max(0, Volatile.Read(ref _pending));
 
@@ -37,32 +55,65 @@ public sealed class TranslationPipeline : IAsyncDisposable
         _worker = Task.Run(ConsumeAsync);
     }
 
+    public TranslationMetrics GetMetrics() => new(
+        Interlocked.Read(ref _finalQueued),
+        Interlocked.Read(ref _previewQueued),
+        Interlocked.Read(ref _requestsStarted),
+        Interlocked.Read(ref _requestsSucceeded),
+        Interlocked.Read(ref _requestsFailed),
+        PendingPhrases);
+
     public bool TryEnqueueFinal(string text)
     {
         if (string.IsNullOrWhiteSpace(text)) return true;
+        // A final phrase invalidates any provisional translation currently in flight.
+        long revision = Interlocked.Increment(ref _previewRevision);
+        bool added = Enqueue(new Phrase(text.Trim(), Generation, false, revision), true);
+        if (added) Interlocked.Increment(ref _finalQueued);
+        return added;
+    }
+
+    /// <summary>
+    /// Request a translation of the current unfinished utterance. The UI
+    /// calls this at a controlled interval, not for every ASR token.
+    /// Older previews are not shown once a newer hypothesis or final arrives.
+    /// </summary>
+    public bool TryEnqueuePreview(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text) || Volatile.Read(ref _accepting) == 0)
+            return false;
+        if (PendingPhrases >= 3) return false;
+        long revision = Interlocked.Increment(ref _previewRevision);
+        bool added = Enqueue(new Phrase(text.Trim(), Generation, true, revision), false);
+        if (added) Interlocked.Increment(ref _previewQueued);
+        return added;
+    }
+
+    private bool Enqueue(Phrase phrase, bool reportFull)
+    {
         if (Volatile.Read(ref _accepting) == 0) return false;
-        var item = new Phrase(text.Trim(), Generation);
-        // We don't silently evict interview speech when translation falls behind.
         Interlocked.Increment(ref _pending);
-        if (_queue.Writer.TryWrite(item)) return true;
+        if (_queue.Writer.TryWrite(phrase)) return true;
         Interlocked.Decrement(ref _pending);
-        Error?.Invoke("Russian translation is lagging: the pending phrase queue is full.");
+        if (reportFull) Error?.Invoke("Russian translation is lagging: the pending phrase queue is full.");
         return false;
     }
 
     public void ClearPending()
     {
         Interlocked.Increment(ref _generation);
+        Interlocked.Increment(ref _previewRevision);
         while (_queue.Reader.TryRead(out _))
             Interlocked.Decrement(ref _pending);
-        // A request already in flight may finish, but its generation is discarded.
+        // The response to any already-sent request is ignored after Clear.
     }
 
     private async Task ConsumeAsync()
     {
         try
         {
-            while (_carried is not null || await _queue.Reader.WaitToReadAsync(_shutdown.Token).ConfigureAwait(false))
+            while (_carried is not null ||
+                   await _queue.Reader.WaitToReadAsync(_shutdown.Token).ConfigureAwait(false))
             {
                 Phrase first;
                 if (_carried is { } carried)
@@ -76,38 +127,59 @@ public sealed class TranslationPipeline : IAsyncDisposable
                     Interlocked.Decrement(ref _pending);
                 }
 
+                if (first.Generation != Generation) continue;
+                if (first.IsPreview &&
+                    (first.PreviewRevision != Interlocked.Read(ref _previewRevision) ||
+                     Volatile.Read(ref _accepting) == 0))
+                    continue;
+
                 var phrases = new List<string> { first.Text };
-                // Fold up to 4 speech endpoints into one Groq call when input is arriving
-                // faster than the translation request rate. Order remains unchanged.
-                while (phrases.Count < 4 && _queue.Reader.TryRead(out var next))
+                if (!first.IsPreview)
                 {
-                    Interlocked.Decrement(ref _pending);
-                    if (next.Generation == first.Generation)
-                        phrases.Add(next.Text);
-                    else
+                    // A provisional result is never batched with finalized phrases.
+                    while (phrases.Count < 4 && _queue.Reader.TryRead(out Phrase next))
                     {
-                        // Do not lose the first utterance after ClearPending.
-                        _carried = next;
-                        break;
+                        Interlocked.Decrement(ref _pending);
+                        if (!next.IsPreview && next.Generation == first.Generation)
+                            phrases.Add(next.Text);
+                        else
+                        {
+                            _carried = next;
+                            break;
+                        }
                     }
                 }
-                if (first.Generation != Generation) continue;
 
+                if (first.Generation != Generation) continue;
                 try
                 {
+                    Interlocked.Increment(ref _requestsStarted);
                     string result = await _translator.TranslateToRussianAsync(
                         string.Join("\n", phrases), _shutdown.Token).ConfigureAwait(false);
+                    Interlocked.Increment(ref _requestsSucceeded);
+
                     if (first.Generation == Generation && !string.IsNullOrWhiteSpace(result))
-                        Translated?.Invoke(result, first.Generation);
+                    {
+                        if (first.IsPreview)
+                        {
+                            if (first.PreviewRevision == Interlocked.Read(ref _previewRevision))
+                                PreviewTranslated?.Invoke(result, first.Generation);
+                        }
+                        else Translated?.Invoke(result, first.Generation);
+                    }
                 }
                 catch (OperationCanceledException) when (_shutdown.IsCancellationRequested) { break; }
                 catch (Exception ex)
                 {
+                    Interlocked.Increment(ref _requestsFailed);
                     if (first.Generation == Generation)
                         Error?.Invoke(ex is HttpRequestException or TaskCanceledException
-                            ? "Russian translation network request failed or timed out."
-                            : ex.Message);
+                            ? "Groq connection failed or timed out."
+                            : ex is InvalidOperationException
+                                ? ex.Message
+                                : "Groq returned an unreadable response or the translation request failed.");
                 }
+
                 if (_requestInterval > TimeSpan.Zero)
                     await Task.Delay(_requestInterval, _shutdown.Token).ConfigureAwait(false);
             }
@@ -115,7 +187,6 @@ public sealed class TranslationPipeline : IAsyncDisposable
         catch (OperationCanceledException) when (_shutdown.IsCancellationRequested) { }
     }
 
-    /// <summary>Attempt to finish pending translations; cancel remaining requests after the deadline.</summary>
     public async Task CompleteAsync(TimeSpan maxWait)
     {
         if (Interlocked.Exchange(ref _accepting, 0) != 0) _queue.Writer.TryComplete();
@@ -124,7 +195,7 @@ public sealed class TranslationPipeline : IAsyncDisposable
         {
             _shutdown.Cancel();
             await _worker.ConfigureAwait(false);
-            Error?.Invoke("Some pending translations were cancelled after the stop timeout.");
+            Error?.Invoke("Pending translations were cancelled after the stop timeout.");
         }
     }
 
