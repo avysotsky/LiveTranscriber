@@ -10,7 +10,7 @@ public sealed record PipelineHealthReading(
     bool IsCloud,
     double ProcessedAudioSeconds,
     int QueuedChunks = 0,
-    int QueueCapacityChunks = 12,
+    int QueueCapacityChunks = 24,
     long NewNearCapacityEvents = 0);
 
 /// <summary>

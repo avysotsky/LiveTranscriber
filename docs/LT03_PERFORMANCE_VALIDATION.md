@@ -10,7 +10,7 @@ The desktop app samples every 2 seconds:
 
 - Application CPU utilization normalized to **total logical CPU capacity**; Windows Task Manager may use a different calculation or sampling interval.
 - Application working-set memory and observed peak for this session.
-- Current and peak **queued** audio duration, based on PCM mono at 16,000 samples/sec, and occupancy in **chunks** out of the fixed 12-slot queue.
+- Current and peak **queued** audio duration, based on PCM mono at 16,000 samples/sec, and occupancy in **chunks** out of the fixed 24-slot queue.
 - Count and duration of **dropped** chunks, when the bounded queue is full.
 - Client processing ratio (ASR processing time / processed-audio duration). This is LOCAL model compute RTF for offline recognition, but **NOT** cloud service latency in Cloud mode.
 - **Mean and maximum queue wait** from each source callback into the start of its ASR processing call, plus the longest individual client-side recognizer call. These are sampled using monotonic Stopwatch ticks; they are NOT speech onset-to-rendered-transcript latency.
@@ -18,11 +18,11 @@ The desktop app samples every 2 seconds:
 The health indicator reports `WarmingUp`, `Healthy` or `UnderPressure`. `UnderPressure` is immediate on fresh dropped audio, otherwise based on three consecutive 2-second samples above at least one threshold:
 
 - App CPU >= 20%
-- At least 75% occupied queue slots (9 of 12), regardless of each packet's duration
+- At least 75% occupied queue slots (18 of 24), regardless of each packet's duration
 - A new near-capacity crossing event since the previous observation, even if the queue already drained (alerts immediately)
 - Local ASR RTF >= 0.9 (local mode only)
 
-Crossing nine queue slots is recorded within the capture pipeline rather than only sampled on the UI's 2-second timer. The crossing counter therefore detects brief backlog spikes that would be missed by a periodic current-queue sample. A new crossing produces an immediate warning at the next UI sample; this does not imply audio was lost. Return to `Healthy` requires three consecutive clean samples. The thresholds are deliberately conservative **indicators**, not guaranteed resource budgets or automatic throttling.
+Crossing eighteen queue slots is recorded within the capture pipeline rather than only sampled on the UI's 2-second timer. The crossing counter therefore detects brief backlog spikes that would be missed by a periodic current-queue sample. A new crossing produces an immediate warning at the next UI sample; this does not imply audio was lost. Return to `Healthy` requires three consecutive clean samples. The thresholds are deliberately conservative **indicators**, not guaranteed resource budgets or automatic throttling.
 
 **Privacy:** these counters contain no audio or transcript contents. The `Copy diagnostics` button copies the on-screen session report to the clipboard but does not write a file. Cloud fallback is **not automatic**, to avoid unexpected audio upload.
 
@@ -85,3 +85,29 @@ Source: Local INT8, **Selected application**, session length **00:11:10**, after
 Each received audio frame is timestamped with a monotonic clock at its **capture callback**. When a frame is dequeued, the app measures the time until ASR processing **starts**. The mean and peak capture callback-to-ASR-start times and longest individual recognizer call are reported in **milliseconds**. These metrics help distinguish queue contention from ASR computation without recording or logging audio.
 
 They explicitly exclude upstream Windows audio-capture buffering, model endpoint segmentation, UI dispatch/rendering and any network/server ASR delay. A value such as 2 ms queue wait does **not** mean that the transcript appeared 2 ms after the speech.
+
+## 2026-10-09 field report: ~30-minute LT-03c run
+
+Source: Local INT8, Selected application. Reported elapsed time **00:29:49** (11 seconds short of exactly 30 minutes).
+
+| Metric | Value |
+| --- | ---: |
+| Peak CPU | 10.0% |
+| Peak working set | 380 MiB |
+| Local processing ratio | 0.12 |
+| Peak queued audio | 0.12 s (12/12 frames) |
+| Near-capacity crossings | 7 |
+| Dropped audio | 0.01 s (1 frame) |
+| Processed audio | 1789.26 s (178926 frames) |
+| Mean capture callback-to-ASR start wait | 1.33 ms |
+| Peak capture callback-to-ASR start wait | 105.27 ms |
+| Longest ASR call | 135.43 ms |
+| Final health | Healthy |
+
+One dropped ~10ms packet represents about **0.00056%** of the observed 1789.27s input. The zero-loss criterion was not strictly met, although CPU, memory, and average queue wait remain comfortably within targets. The queue filled to 12/12 slots while the longest client-side ASR call was 135ms. Both facts indicate that additional burst capacity may be useful, but the summary report does not prove the drop occurred during that particular ASR call.
+
+## LT-03d targeted mitigation
+
+Increase the bounded audio packet queue from **12 to 24 slots**, shifting the 75% high-watermark alert from 9 to **18 slots**. At the observed typical 10ms packet size this corresponds to approximately 240ms of queue headroom, accommodating one roughly 135ms processing stall without necessarily dropping a sample. The queue remains bounded and retains the oldest-frame eviction policy when full. No extra ASR threads, no microphone capture, no automatic cloud fallback. Larger queued blocks (if returned by a different audio device or source) can represent proportionally longer buffered audio; neither a hard 240ms latency ceiling nor zero-loss guarantee is claimed.
+
+**Acceptance to repeat:** another 30-minute session under comparable background load; prioritize zero dropped packets, observe peak callback-to-ASR wait and near-capacity crossings. Include separate-application isolation test if not yet performed. Do not infer full speech-to-screen latency from the queue-wait measurement.
