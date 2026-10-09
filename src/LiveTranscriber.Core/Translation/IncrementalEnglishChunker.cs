@@ -7,9 +7,9 @@ namespace LiveTranscriber.Core.Translation;
 /// </summary>
 public sealed class IncrementalEnglishChunker
 {
-    private const int MinimumSegment = 42;
+    private const int MinimumSegment = 34;
     private const int MaximumSegment = 105;
-    private const int UnstableTail = 20;
+    private const int UnstableTail = 12;
     private readonly Queue<string> _ready = new();
     private int _consumed;
 
