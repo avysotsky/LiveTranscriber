@@ -7,8 +7,11 @@ namespace LiveTranscriber.Core;
 public sealed class TranscriptionSession : IAsyncDisposable
 {
     private const double SamplesPerSecond = 16_000d;
-    private const int QueueCapacity = 12;
-    private const int QueueHighWatermark = 9; // 75% of the fixed 12-chunk buffer
+    // Observed WASAPI packet duration on the test machine is ~10ms. A 24-frame
+    // buffer accommodates short (~135ms) recognizer/scheduler stalls while
+    // preserving bounded memory and the oldest-frame eviction policy.
+    private const int QueueCapacity = 24;
+    private const int QueueHighWatermark = 18; // 75% of the fixed 24-frame buffer
     private readonly IAudioSource _source;
     private readonly ISpeechEngine _engine;
     private readonly object _queueGate = new();
