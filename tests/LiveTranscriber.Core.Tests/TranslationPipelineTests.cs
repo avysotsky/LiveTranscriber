@@ -23,6 +23,66 @@ public sealed class TranslationPipelineTests
     }
 
     [Fact]
+    public async Task InterimHypothesisTranslatesWithoutAnyFinalEvent()
+    {
+        var backend = new EchoTranslator();
+        await using var sut = new TranslationPipeline(backend, TimeSpan.Zero);
+        var text = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        sut.PreviewTranslated += (russian, _) => text.TrySetResult(russian);
+        Assert.True(sut.TryEnqueuePreview("Can you explain dependency injection?"));
+        Assert.Equal("Can you explain dependency injection?",
+            await text.Task.WaitAsync(TimeSpan.FromSeconds(5)));
+        await sut.CompleteAsync(TimeSpan.FromSeconds(5));
+        var metrics = sut.GetMetrics();
+        Assert.Equal(0, metrics.FinalPhrasesQueued);
+        Assert.Equal(1, metrics.PreviewPhrasesQueued);
+        Assert.Equal(1, metrics.ApiRequestsSucceeded);
+    }
+
+    [Fact]
+    public async Task FinalUtteranceInvalidatesRunningInterimResult()
+    {
+        var backend = new BlockingFirstTranslator();
+        await using var sut = new TranslationPipeline(backend, TimeSpan.Zero);
+        var previews = new ConcurrentQueue<string>();
+        var finals = new ConcurrentQueue<string>();
+        sut.PreviewTranslated += (text, _) => previews.Enqueue(text);
+        sut.Translated += (text, _) => finals.Enqueue(text);
+        Assert.True(sut.TryEnqueuePreview("partial speech"));
+        await backend.FirstEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.True(sut.TryEnqueueFinal("final complete sentence"));
+        backend.ReleaseFirst.TrySetResult();
+        await sut.CompleteAsync(TimeSpan.FromSeconds(5));
+        Assert.Empty(previews);
+        Assert.Equal(new[] { "final complete sentence" }, finals.ToArray());
+        Assert.Equal(2, sut.GetMetrics().ApiRequestsSucceeded);
+    }
+
+    [Fact]
+    public async Task SecondInterimSupersedesFirstAndOnlyLatestAppears()
+    {
+        var backend = new BlockingFirstTranslator();
+        await using var sut = new TranslationPipeline(backend, TimeSpan.Zero);
+        var previews = new ConcurrentQueue<string>();
+        var latest = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        sut.PreviewTranslated += (text, _) =>
+        {
+            previews.Enqueue(text);
+            latest.TrySetResult(text);
+        };
+        Assert.True(sut.TryEnqueuePreview("old interim"));
+        await backend.FirstEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.True(sut.TryEnqueuePreview("current interim"));
+        backend.ReleaseFirst.TrySetResult();
+        // Preview results are intentionally discarded on Stop; observe the
+        // latest interim while the pipeline is still running.
+        Assert.Equal("current interim",
+            await latest.Task.WaitAsync(TimeSpan.FromSeconds(5)));
+        await sut.CompleteAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(new[] { "current interim" }, previews.ToArray());
+    }
+
+    [Fact]
     public async Task NonFinalTextIsNotQueuedByEmptyInput()
     {
         var backend = new EchoTranslator();

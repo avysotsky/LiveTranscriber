@@ -16,6 +16,12 @@ public partial class MainWindow : Window
     private TranslationPipeline? _translations;
     private readonly StringBuilder _confirmed = new();
     private readonly StringBuilder _russian = new();
+    private string _previewRussian = string.Empty;
+    private string _lastPreviewEnglish = string.Empty;
+    private DateTimeOffset _lastPreviewSubmitted;
+    private TranslationMetrics? _lastTranslationMetrics;
+    private bool _translationWasEnabled;
+    private string _lastTranslationError = string.Empty;
     private SystemResourceSampler _resourceSampler = new();
     private PipelineHealthMonitor _healthMonitor = new();
     private DateTimeOffset _sessionStartedAt;
@@ -96,9 +102,15 @@ public partial class MainWindow : Window
         TranslationPipeline? translationCandidate = null;
         try
         {
-            if (TranslateToggle.IsChecked == true)
+            _translationWasEnabled = TranslateToggle.IsChecked == true;
+            _lastTranslationMetrics = null;
+            _lastTranslationError = string.Empty;
+            _previewRussian = string.Empty;
+            _lastPreviewEnglish = string.Empty;
+            _lastPreviewSubmitted = DateTimeOffset.MinValue;
+            if (_translationWasEnabled)
             {
-                // Consent is an explicit UI action. Only final text (never audio) goes to Groq.
+                // Explicit user opt-in is required for sending English text to Groq.
                 var translator = new GroqRussianTranslator(
                     Environment.GetEnvironmentVariable("GROQ_API_KEY") ?? "");
                 translationCandidate = new TranslationPipeline(translator);
@@ -109,20 +121,33 @@ public partial class MainWindow : Window
                         if (!ReferenceEquals(_translations, active) ||
                             generation != active.Generation) return;
                         _russian.AppendLine(russianText.Trim());
-                        RussianBox.Text = _russian.ToString();
-                        RussianBox.ScrollToEnd();
-                        TranslationStatus.Text = $"RU translated · {active.PendingPhrases} pending";
+                        _previewRussian = string.Empty;
+                        _lastTranslationError = string.Empty;
+                        RenderRussian();
+                        RefreshTranslationStatus();
+                    });
+                active.PreviewTranslated += (russianText, generation) =>
+                    _ = Dispatcher.BeginInvoke(() =>
+                    {
+                        if (!ReferenceEquals(_translations, active) ||
+                            generation != active.Generation) return;
+                        _previewRussian = russianText.Trim();
+                        RenderRussian();
+                        RefreshTranslationStatus();
                     });
                 active.Error += message =>
                     _ = Dispatcher.BeginInvoke(() =>
                     {
                         if (ReferenceEquals(_translations, active))
-                            TranslationStatus.Text = "RU: " + message;
+                        {
+                            _lastTranslationError = message;
+                            RefreshTranslationStatus();
+                        }
                     });
                 _translations = active;
-                TranslationStatus.Text = "RU: enabled (finalized English text sent to Groq)";
+                TranslationStatus.Text = "RU enabled — interim and finalized English text sent to Groq.";
             }
-            else TranslationStatus.Text = "Russian translation disabled";
+            else TranslationStatus.Text = "RU disabled — check Auto-translate to enable.";
 
             CaptureSourceSelection selection = GetSelection();
             IAudioSource audio = selection.Mode == CaptureSourceMode.DeviceLoopback
@@ -170,6 +195,7 @@ public partial class MainWindow : Window
     {
         EngineSelect.IsEnabled = enabled;
         TranslateToggle.IsEnabled = enabled;
+        TestGroqButton.IsEnabled = enabled;
         CaptureSelect.IsEnabled = enabled;
         bool app = enabled && CaptureSelect.SelectedIndex == 1;
         ProcessSelect.IsEnabled = app;
@@ -201,9 +227,10 @@ public partial class MainWindow : Window
         {
             if (translations is not null)
             {
+                _lastTranslationMetrics = translations.GetMetrics();
                 await translations.DisposeAsync();
                 _translations = null;
-                TranslationStatus.Text = "RU: translation stopped";
+                TranslationStatus.Text = BuildTranslationStatus(_lastTranslationMetrics) + " (stopped)";
             }
             _previousDiagnosticReport = BuildDiagnostics(session.GetMetrics());
             ResourceText.Text = _previousDiagnosticReport.Replace(Environment.NewLine, "  |  ");
@@ -251,6 +278,8 @@ public partial class MainWindow : Window
             PipelineHealth.UnderPressure => "Health: under pressure — reduce load or choose Cloud manually",
             _ => "Health: warming up"
         };
+        TrySubmitInterimTranslation();
+        RefreshTranslationStatus();
     }
 
     private string BuildDiagnostics(PipelineMetrics metrics)
@@ -278,7 +307,8 @@ public partial class MainWindow : Window
             $"Client processing/audio ratio: {metrics.ProcessingRatio:0.00}" +
                 (EngineSelect.SelectedIndex == 1 ? " (cloud upload, not speech latency)" : " (local ASR)"),
             $"Health: {_healthMonitor.State}",
-            "Queue wait starts at the capture callback, not at speech onset. End-to-end transcript delay is NOT measured."
+            "Queue wait starts at the capture callback, not at speech onset. End-to-end transcript delay is NOT measured.",
+            BuildTranslationStatus(_translations?.GetMetrics() ?? _lastTranslationMetrics)
         });
     }
 
@@ -290,10 +320,86 @@ public partial class MainWindow : Window
         Clipboard.SetText(report);
     }
 
+    private void TrySubmitInterimTranslation()
+    {
+        TranslationPipeline? pipeline = _translations;
+        if (pipeline is null || _session is null) return;
+
+        // At most one changed interim hypothesis every four seconds; do not
+        // turn each Sherpa token into an API request.
+        string english = _hypothesis.Trim();
+        if (english.Length < 12 || english == _lastPreviewEnglish ||
+            DateTimeOffset.UtcNow - _lastPreviewSubmitted < TimeSpan.FromSeconds(4))
+            return;
+
+        if (pipeline.TryEnqueuePreview(english))
+        {
+            _lastPreviewEnglish = english;
+            _lastPreviewSubmitted = DateTimeOffset.UtcNow;
+        }
+    }
+
+    private void RenderRussian()
+    {
+        RussianBox.Text = _russian.ToString() +
+            (string.IsNullOrWhiteSpace(_previewRussian)
+                ? string.Empty : _previewRussian + " …");
+        RussianBox.ScrollToEnd();
+    }
+
+    private string BuildTranslationStatus(TranslationMetrics? metrics)
+    {
+        if (!_translationWasEnabled) return "RU: off (cloud translation not enabled)";
+        if (metrics is null) return "RU: enabled; no phrases processed yet";
+        string state = $"RU final {metrics.FinalPhrasesQueued}, interim {metrics.PreviewPhrasesQueued}, " +
+            $"Groq requests {metrics.ApiRequestsStarted}, OK {metrics.ApiRequestsSucceeded}, " +
+            $"failed {metrics.ApiRequestsFailed}, pending {metrics.PendingPhrases}";
+        return string.IsNullOrEmpty(_lastTranslationError)
+            ? state : state + " | Error: " + _lastTranslationError;
+    }
+
+    private void RefreshTranslationStatus()
+    {
+        TranslationStatus.Text = BuildTranslationStatus(
+            _translations?.GetMetrics() ?? _lastTranslationMetrics);
+    }
+
+    private async void TestGroq_Click(object sender, RoutedEventArgs e)
+    {
+        if (TranslateToggle.IsChecked != true)
+        {
+            TranslationStatus.Text = "RU TEST: enable Auto-translate first (Groq sends text to the cloud).";
+            return;
+        }
+
+        TestGroqButton.IsEnabled = false;
+        TranslationStatus.Text = "RU TEST: contacting Groq with a fixed example sentence...";
+        try
+        {
+            await using var translator = new GroqRussianTranslator(
+                Environment.GetEnvironmentVariable("GROQ_API_KEY") ?? "");
+            string result = await translator.TranslateToRussianAsync(
+                "Can you explain dependency injection in ASP.NET Core?", CancellationToken.None);
+            TranslationStatus.Text = "RU TEST: Groq connection OK.";
+            MessageBox.Show(this, result, "Groq translation test — Russian",
+                MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+        catch (Exception ex)
+        {
+            string safeMessage = ex is InvalidOperationException
+                ? ex.Message : "Groq request failed. Check network and proxy settings.";
+            TranslationStatus.Text = "RU TEST FAILED: " + safeMessage;
+        }
+        finally { TestGroqButton.IsEnabled = _session is null; }
+    }
+
     private void UpdateText(TranscriptUpdate update)
     {
         if (update.IsFinal && !string.IsNullOrWhiteSpace(update.Text))
+        {
             _translations?.TryEnqueueFinal(update.Text);
+            _lastPreviewEnglish = string.Empty;
+        }
 
         _ = Dispatcher.BeginInvoke(() =>
         {
@@ -302,6 +408,9 @@ public partial class MainWindow : Window
                 if (!string.IsNullOrWhiteSpace(update.Text))
                     _confirmed.AppendLine(update.Text.Trim());
                 _hypothesis = string.Empty;
+                _previewRussian = string.Empty;
+                RenderRussian();
+                RefreshTranslationStatus();
             }
             else _hypothesis = update.Text.Trim();
             RenderTranscript();
@@ -332,11 +441,11 @@ public partial class MainWindow : Window
         _translations?.ClearPending();
         _confirmed.Clear();
         _russian.Clear();
+        _previewRussian = string.Empty;
+        _lastPreviewEnglish = string.Empty;
         _hypothesis = string.Empty;
-        RussianBox.Clear();
-        TranslationStatus.Text = _translations is null
-            ? "Russian translation disabled"
-            : "RU: cleared; translating new final phrases";
+        RenderRussian();
+        RefreshTranslationStatus();
         RenderTranscript();
     }
 
